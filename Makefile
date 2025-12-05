@@ -1,6 +1,7 @@
 CFLAGS = -Wall -Wextra -ggdb
+TESTDIR = tests
 
 default: test
 
-test: clex.c clex.h
-	cc $(CFLAGS) -o $@ $< && ./test input.c
+test: $(TESTDIR)/test_tokens.c clex.h
+	cc $(CFLAGS) -o $@ $< && ./test $(TESTDIR)/input
