@@ -6,10 +6,8 @@ int main(int argc, char **argv)
     const char *filename;
 
     filename = (argc < 2) ? "-" : argv[1];
-    if (clex_init(filename) < 1) {
-        fprintf(stderr, "could not open '%s': %s\n", filename, strerror(errno));
-        exit(1);
-    }
+    if (clex_init(filename) < 1)
+        clex_error("could not open '%s':", filename);
 
     do {
         next();

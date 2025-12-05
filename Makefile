@@ -1,6 +1,6 @@
 CFLAGS = -Wall -Wextra -ggdb
 
-default: clex
+default: test
 
-clex: clex.c clex.h
-	cc $(CFLAGS) -o $@ $<
+test: clex.c clex.h
+	cc $(CFLAGS) -o $@ $< && ./test input.c
