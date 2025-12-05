@@ -32,29 +32,48 @@
 
 #ifdef CLEX_IMPLEMENTATION
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <stdarg.h>
-#include <stdint.h>
-#include <unistd.h>
-#include <fcntl.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 #include <errno.h>
+#include <math.h>
+#include <fcntl.h>
+
+#ifndef _WIN32
+#include <unistd.h>
+#include <dlfcn.h>
+#endif
+
+#ifdef _WIN33
+#define WIN32_LEAN_AND_MEAN 1
+#include <windows.h>
+#include <io.h> /* open, close etc. */
+#include <direct.h> /* getcwd */
+#include <malloc.h> /* alloca */
+# ifndef _MSC_VER
+#  include <stdint.h>
+# endif
+#endif
 
 #define PUB_FUNC
+#ifdef _MSC_VER
+# define NORETURN __declspec(noreturn)
+#else
+# define NORETURN __attribute__((noreturn))
+#endif
 #define ST_INLN static inline
 #define ST_DATA static
 #define ST_FUNC static
-#define NORETURN __attribute__((noreturn))
+
+#define ACCEPT_LF_IN_STRINGS 0
 
 #define TOK_FLAG_BOL   0x0001 /* beginning of line before */
 #define TOK_FLAG_BOF   0x0002 /* beginning of file before */
-#define TOK_FLAG_ENDIF 0x0004 /* a endif was found matching starting #ifdef */
 
 #define PARSE_FLAG_TOK_NUM    0x0002 /* return numbers instead of TOK_PPNUM */
 #define PARSE_FLAG_LINEFEED   0x0004 /* line feed is returned as a
                                         returned at eof */
-#define PARSE_FLAG_ASM_FILE 0x0008 /* we processing an asm file: '#' can be used for line comment, etc. */
 #define PARSE_FLAG_SPACES     0x0010 /* next() returns space tokens (for -E) */
 #define PARSE_FLAG_ACCEPT_STRAYS 0x0020 /* next() returns '\\' token */
 #define PARSE_FLAG_TOK_STR    0x0040 /* return parsed strings instead of TOK_PPSTR */
@@ -64,7 +83,155 @@
 #define IS_ID  2
 #define IS_NUM 4
 
-ST_DATA const char clex_keywords[] = 
+#define SYM_STRUCT     0x40000000 /* struct/union/enum symbol space */
+#define SYM_FIELD      0x20000000 /* struct/union field symbol space */
+#define SYM_FIRST_ANOM 0x10000000 /* first anonymous sym */
+
+/* token values */
+
+/* conditional ops */
+#define TOK_LAND  0x90
+#define TOK_LOR   0x91
+/* warning: the following compare tokens depend on i386 asm code */
+#define TOK_ULT 0x92
+#define TOK_UGE 0x93
+#define TOK_EQ  0x94
+#define TOK_NE  0x95
+#define TOK_ULE 0x96
+#define TOK_UGT 0x97
+#define TOK_Nset 0x98
+#define TOK_Nclear 0x99
+#define TOK_LT  0x9c
+#define TOK_GE  0x9d
+#define TOK_LE  0x9e
+#define TOK_GT  0x9f
+
+#define TOK_DEC     0x80 /* -- */
+#define TOK_MID     0x81 /* inc/dec, to void constant */
+#define TOK_INC     0x82 /* ++ */
+#define TOK_UDIV    0x83 /* unsigned division */
+#define TOK_UMOD    0x84 /* unsigned modulo */
+#define TOK_PDIV    0x85 /* fast division with undefined rounding for pointers */
+#define TOK_UMULL   0x86 /* unsigned 32x32 -> 64 mul */
+#define TOK_ADDC1   0x87 /* add with carry generation */
+#define TOK_ADDC2   0x88 /* add with carry use */
+#define TOK_SUBC1   0x89 /* add with carry generation */
+#define TOK_SUBC2   0x8a /* add with carry use */
+#define TOK_SHL     '<' /* shift left */
+#define TOK_SAR     '>' /* signed shift right */
+#define TOK_SHR     0x8b /* unsigned shift right */
+#define TOK_NEG     TOK_MID /* unary minus operation (for floats) */
+
+#define TOK_ARROW   0xa0 /* -> */
+#define TOK_DOTS    0xa1 /* three dots */
+#define TOK_PLCHLDR 0xa4 /* placeholder token as defined in C99 */
+#define TOK_SOTYPE  0xa7 /* alias of '(' for parsing sizeof (type) */
+
+/* assignment operators */
+#define TOK_A_ADD   0xb0
+#define TOK_A_SUB   0xb1
+#define TOK_A_MUL   0xb2
+#define TOK_A_DIV   0xb3
+#define TOK_A_MOD   0xb4
+#define TOK_A_AND   0xb5
+#define TOK_A_OR    0xb6
+#define TOK_A_XOR   0xb7
+#define TOK_A_SHL   0xb8
+#define TOK_A_SAR   0xb9
+
+/* tokens that carry values (in additional token string space / tokc) --> */
+#define TOK_CCHAR   0xc0 /* char constant in tokc */
+#define TOK_LCHAR   0xc1
+#define TOK_CINT    0xc2 /* number in tokc */
+#define TOK_CUINT   0xc3 /* unsigned int constant */
+#define TOK_CLLONG  0xc4 /* long long constant */
+#define TOK_CULLONG 0xc5 /* unsigned long long constant */
+#define TOK_CLONG   0xc6 /* long constant */
+#define TOK_CULONG  0xc7 /* unsigned long constant */
+#define TOK_STR     0xc8 /* pointer to string in tokc */
+#define TOK_LSTR    0xc9
+#define TOK_CFLOAT  0xca /* float constant */
+#define TOK_CDOUBLE 0xcb /* double constant */
+#define TOK_CLDOUBLE 0xcc /* long double constant */
+#define TOK_PPNUM   0xcd /* preprocessor number */
+#define TOK_PPSTR   0xce /* preprocessor string */
+#define TOK_LINENUM 0xcf /* line number info */
+
+#define TOK_EOF       (-1)  /* end of file */
+#define TOK_LINEFEED  10    /* line feed */
+
+/* all identifiers and strings have token above that */
+#define TOK_IDENT 256
+
+typedef struct CString {
+    int size; /* size in bytes */
+    char *data;
+    int size_allocated;
+} CString;
+
+typedef union CValue {
+    long double ld;
+    double d;
+    float f;
+    uint64_t i;
+    struct {
+        int size;
+        const void *data;
+    } str;
+} CValue;
+
+typedef int nwchar_t;
+
+#define IO_BUF_SIZE 8192
+
+typedef struct BufferedFile {
+    uint8_t *buf_ptr;
+    uint8_t *buf_end;
+    int fd;
+    struct BufferedFile *prev;
+    int line_num;    /* current line number - here to simplify code */
+    int prev_tok_flags; /* saved tok_flags */
+    char filename[1024];    /* filename */
+    unsigned char unget[4];
+    unsigned char buffer[1]; /* extra size for CH_EOB char */
+} BufferedFile;
+
+#define CH_EOB   '\\'
+#define CH_EOF   (-1)
+
+/* used to record tokens */
+typedef struct TokenString {
+    int *str;
+    int len;
+    int need_spc;
+    int allocated_len;
+    int last_line_num;
+    int save_line_num;
+    char alloc;
+} TokenString;
+
+#define STRING_MAX_SIZE     1024
+#define TOKSTR_MAX_SIZE     256
+#define PACK_STACK_SIZE     8
+
+#define TOK_HASH_SIZE       16384 /* must be a power of two */
+#define TOK_ALLOC_INCR      512  /* must be a power of two */
+#define TOK_MAX_SIZE        4 /* token max size in int unit when stored in string */
+
+/* token symbol management */
+typedef struct TokenSym {
+    struct TokenSym *hash_next;
+    struct Sym *sym_define; /* direct pointer to define */
+    struct Sym *sym_label; /* direct pointer to label */
+    struct Sym *sym_struct; /* direct pointer to structure */
+    struct Sym *sym_identifier; /* direct pointer to identifier */
+    int tok; /* token number */
+    int len;
+    char str[1];
+} TokenSym;
+
+/* global variables */
+ST_DATA const char clex_keywords[] =
 #define DEF(id, str) str "\0"
 /* keywords */
      DEF(TOK_IF, "if")
@@ -139,243 +306,6 @@ ST_DATA const char clex_keywords[] =
 #undef DEF
 ;
 
-typedef int nwchar_t;
-
-typedef struct CString {
-    int size; /* size in bytes */
-    void *data;
-    int size_allocated;
-} CString;
-
-typedef union CValue {
-    long double ld;
-    double d;
-    float f;
-    uint64_t i;
-    struct {
-        int size;
-        const void *data;
-    } str;
-} CValue;
-
-#define SYM_STRUCT     0x40000000 /* struct/union/enum symbol space */
-#define SYM_FIELD      0x20000000 /* struct/union field symbol space */
-#define SYM_FIRST_ANOM 0x10000000 /* first anonymous sym */
-
-/* stored in 'Sym->f.func_type' field */
-#define FUNC_NEW       1 /* ansi function prototype */
-#define FUNC_OLD       2 /* old function prototype */
-#define FUNC_ELLIPSIS  3 /* ansi function prototype with ... */
-
-/* stored in 'Sym->f.func_call' field */
-#define FUNC_CDECL     0 /* standard c call */
-#define FUNC_STDCALL   1 /* pascal c call */
-#define FUNC_FASTCALL1 2 /* first param in %eax */
-#define FUNC_FASTCALL2 3 /* first parameters in %eax, %edx */
-#define FUNC_FASTCALL3 4 /* first parameter in %eax, %edx, %ecx */
-#define FUNC_FASTCALLW 5 /* first parameter in %ecx, %edx */
-#define FUNC_THISCALL  6 /* first param in %ecx */
-
-/* field 'Sym.t' for macros */
-#define MACRO_OBJ      0 /* object like macro */
-#define MACRO_FUNC     1 /* function like macro */
-#define MACRO_JOIN     2 /* macro uses ## */
-
-/* field 'Sym.r' for C labels */
-#define LABEL_DEFINED  0 /* label is defined */
-#define LABEL_FORWARD  1 /* label is forward defined */
-#define LABEL_DECLARED 2 /* label is declared but never used */
-#define LABEL_GONE     3 /* label isn't in scope, but not yet popped
-                            from local_label_stack (stmt exprs) */
-
-/* type_decl() types */
-#define TYPE_ABSTRACT  1 /* type without variable */
-#define TYPE_DIRECT    2 /* type with variable */
-#define TYPE_PARAM     4 /* type declares function parameter */
-#define TYPE_NEST      8 /* nested call to post_type */
-
-#define IO_BUF_SIZE 8192
-
-typedef struct BufferedFile {
-    uint8_t *buf_ptr;
-    uint8_t *buf_end;
-    int fd;
-    struct BufferedFile *prev;
-    int line_num;    /* current line number - here to simplify code */
-    int prev_tok_flags; /* saved tok_flags */
-    char filename[1024];    /* filename */
-    unsigned char unget[4];
-    unsigned char buffer[1]; /* extra size for CH_EOB char */
-} BufferedFile;
-
-#define CH_EOB   '\\'
-#define CH_EOF   (-1)
-
-/* used to record tokens */
-typedef struct TokenString {
-    int *str;
-    int len;
-    int need_spc;
-    int allocated_len;
-    int last_line_num;
-    int save_line_num;
-    /* used to chain token-strings with begin/end_macro() */
-    struct TokenString *prev;
-    const int *prev_ptr;
-    char alloc;
-} TokenString;
-
-
-#define INCLUDE_STACK_SIZE  32
-#define IFDEF_STACK_SIZE    64
-#define VSTACK_SIZE         512
-#define STRING_MAX_SIZE     1024
-#define TOKSTR_MAX_SIZE     256
-#define PACK_STACK_SIZE     8
-
-#define TOK_HASH_SIZE       16384 /* must be a power of two */
-#define TOK_ALLOC_INCR      512  /* must be a power of two */
-#define TOK_MAX_SIZE        4 /* token max size in int unit when stored in string */
-
-/* token symbol management */
-typedef struct TokenSym {
-    struct TokenSym *hash_next;
-    struct Sym *sym_define; /* direct pointer to define */
-    struct Sym *sym_label; /* direct pointer to label */
-    struct Sym *sym_struct; /* direct pointer to structure */
-    struct Sym *sym_identifier; /* direct pointer to identifier */
-    int tok; /* token number */
-    int len;
-    char str[1];
-} TokenSym;
-
-/* global variables */
-ST_DATA int tok_flags;
-ST_DATA int parse_flags;
-
-ST_DATA struct BufferedFile *file;
-ST_DATA int ch, tok;
-ST_DATA CValue tokc;
-ST_DATA CString tokcstr;
-
-ST_DATA TokenSym *hash_ident[TOK_HASH_SIZE];
-ST_DATA char token_buf[STRING_MAX_SIZE + 1];
-ST_DATA CString cstr_buf;
-ST_DATA TokenString tokstr_buf;
-ST_DATA TokenString unget_buf;
-ST_DATA unsigned char isidnum_table[256 - CH_EOF];
-ST_DATA int pp_debug_tok, pp_debug_symv;
-ST_DATA int pp_counter;
-ST_DATA struct TinyAlloc *toksym_alloc;
-ST_DATA struct TinyAlloc *tokstr_alloc;
-ST_DATA TokenString *macro_stack;
-
-/* display benchmark infos */
-ST_DATA int tok_ident;
-ST_DATA TokenSym **table_ident;
-ST_DATA int pp_expr;
-
-/* token values */
-
-/* warning: the following compare tokens depend on i386 asm code */
-#define TOK_ULT 0x92
-#define TOK_UGE 0x93
-#define TOK_EQ  0x94
-#define TOK_NE  0x95
-#define TOK_ULE 0x96
-#define TOK_UGT 0x97
-#define TOK_Nset 0x98
-#define TOK_Nclear 0x99
-#define TOK_LT  0x9c
-#define TOK_GE  0x9d
-#define TOK_LE  0x9e
-#define TOK_GT  0x9f
-
-#define TOK_LAND  0xa0
-#define TOK_LOR   0xa1
-#define TOK_DEC   0xa2
-#define TOK_MID   0xa3 /* inc/dec, to void constant */
-#define TOK_INC   0xa4
-#define TOK_UDIV  0xb0 /* unsigned division */
-#define TOK_UMOD  0xb1 /* unsigned modulo */
-#define TOK_PDIV  0xb2 /* fast division with undefined rounding for pointers */
-
-/* tokens that carry values (in additional token string space / tokc) --> */
-#define TOK_CCHAR   0xb3 /* char constant in tokc */
-#define TOK_LCHAR   0xb4
-#define TOK_CINT    0xb5 /* number in tokc */
-#define TOK_CUINT   0xb6 /* unsigned int constant */
-#define TOK_CLLONG  0xb7 /* long long constant */
-#define TOK_CULLONG 0xb8 /* unsigned long long constant */
-#define TOK_STR     0xb9 /* pointer to string in tokc */
-#define TOK_LSTR    0xba
-#define TOK_CFLOAT  0xbb /* float constant */
-#define TOK_CDOUBLE 0xbc /* double constant */
-#define TOK_CLDOUBLE 0xbd /* long double constant */
-#define TOK_PPNUM   0xbe /* preprocessor number */
-#define TOK_PPSTR   0xbf /* preprocessor string */
-#define TOK_LINENUM 0xc0 /* line number info */
-#define TOK_TWODOTS 0xa8 /* C++ token ? */
-/* <-- */
-
-#define TOK_UMULL    0xc2 /* unsigned 32x32 -> 64 mul */
-#define TOK_ADDC1    0xc3 /* add with carry generation */
-#define TOK_ADDC2    0xc4 /* add with carry use */
-#define TOK_SUBC1    0xc5 /* add with carry generation */
-#define TOK_SUBC2    0xc6 /* add with carry use */
-#define TOK_ARROW    0xc7
-#define TOK_DOTS     0xc8 /* three dots */
-#define TOK_SHR      0xc9 /* unsigned shift right */
-#define TOK_TWOSHARPS 0xca /* ## preprocessing token */
-#define TOK_PLCHLDR  0xcb /* placeholder token as defined in C99 */
-#define TOK_NOSUBST  0xcc /* means following token has already been pp'd */
-#define TOK_PPJOIN   0xcd /* A '##' in the right position to mean pasting */
-#define TOK_CLONG    0xce /* long constant */
-#define TOK_CULONG   0xcf /* unsigned long constant */
-
-#define TOK_SHL   0x01 /* shift left */
-#define TOK_SAR   0x02 /* signed shift right */
-
-/* assignment operators : normal operator or 0x80 */
-#define TOK_A_MOD 0xa5
-#define TOK_A_AND 0xa6
-#define TOK_A_MUL 0xaa
-#define TOK_A_ADD 0xab
-#define TOK_A_SUB 0xad
-#define TOK_A_DIV 0xaf
-#define TOK_A_XOR 0xde
-#define TOK_A_OR  0xfc
-#define TOK_A_SHL 0x81
-#define TOK_A_SAR 0x82
-
-#define TOK_EOF       (-1)  /* end of file */
-#define TOK_LINEFEED  10    /* line feed */
-
-/* all identifiers and strings have token above that */
-#define TOK_IDENT 256
-
-ST_FUNC void clex_free(void *ptr);
-ST_FUNC void *clex_malloc(unsigned long size);
-ST_FUNC void *clex_mallocz(unsigned long size);
-ST_FUNC void *clex_realloc(void *ptr, unsigned long size);
-
-ST_FUNC void clex_open_bf(const char *filename, int initlen);
-ST_FUNC int clex_open(const char *filename);
-ST_FUNC void clex_close(void);
-
-ST_FUNC char *pstrcpy(char *buf, size_t size, const char *s);
-ST_FUNC int handle_eob(void);
-
-ST_FUNC NORETURN void clex_error(const char *fmt, ...);
-
-/* other utilities */
-ST_FUNC void cstr_cat(CString *cstr, const char *str, int len);
-ST_FUNC void cstr_new(CString *cstr);
-ST_FUNC void cstr_free(CString *cstr);
-ST_FUNC void cstr_reset(CString *cstr);
-
-ST_FUNC uint8_t *parse_comment(uint8_t *p);
-
 /* WARNING: the content of this string encodes token numbers */
 ST_DATA const unsigned char tok_two_chars[] =
 /* outdated -- gr
@@ -401,10 +331,47 @@ ST_DATA const unsigned char tok_two_chars[] =
     '^','=', TOK_A_XOR,
     '|','=', TOK_A_OR,
     '-','>', TOK_ARROW,
-    '.','.', TOK_TWODOTS,
-    '#','#', TOK_TWOSHARPS,
     0
 };
+
+ST_DATA int tok_flags;
+ST_DATA int parse_flags;
+ST_DATA struct BufferedFile *file;
+ST_DATA int ch, tok;
+ST_DATA CValue tokc;
+ST_DATA CString tokcstr;
+ST_DATA TokenSym *hash_ident[TOK_HASH_SIZE];
+ST_DATA char token_buf[STRING_MAX_SIZE + 1];
+ST_DATA CString cstr_buf;
+ST_DATA TokenString tokstr_buf;
+ST_DATA TokenString unget_buf;
+ST_DATA unsigned char isidnum_table[256 - CH_EOF];
+ST_DATA struct TinyAlloc *toksym_alloc;
+ST_DATA struct TinyAlloc *tokstr_alloc;
+
+/* display benchmark infos */
+ST_DATA int tok_ident;
+ST_DATA TokenSym **table_ident;
+ST_DATA int pp_expr;
+
+/* function definitions */
+ST_FUNC void clex_free(void *ptr);
+ST_FUNC void *clex_malloc(unsigned long size);
+ST_FUNC void *clex_mallocz(unsigned long size);
+ST_FUNC void *clex_realloc(void *ptr, unsigned long size);
+ST_FUNC void clex_open_bf(const char *filename, int initlen);
+ST_FUNC int clex_open(const char *filename);
+ST_FUNC void clex_close(void);
+ST_FUNC char *pstrcpy(char *buf, size_t size, const char *s);
+ST_FUNC int handle_eob(void);
+ST_FUNC NORETURN void clex_error(const char *fmt, ...);
+ST_FUNC void cstr_cat(CString *cstr, const char *str, int len);
+ST_FUNC void cstr_new(CString *cstr);
+ST_FUNC void cstr_free(CString *cstr);
+ST_FUNC void cstr_reset(CString *cstr);
+ST_FUNC uint8_t *parse_comment(uint8_t *p);
+ST_FUNC const char *get_tok_str(int v, CValue *cv);
+PUB_FUNC void next(void);
 
 /* space excluding newline */
 static inline int is_space(int ch) {
@@ -423,11 +390,117 @@ static inline int toup(int c) {
     return (c >= 'a' && c <= 'z') ? c - 'a' + 'A' : c;
 }
 
+/* ------------------------------------------------------------------------- */
 ST_FUNC int set_idnum(int c, int val)
 {
     int prev = isidnum_table[c - CH_EOF];
     isidnum_table[c - CH_EOF] = val;
     return prev;
+}
+
+#ifdef _WIN32
+ST_FUNC char *normalize_slashes(char *path)
+{
+    char *p;
+    for (p = path; *p; ++p)
+        if (*p == '\\')
+            *p = '/';
+    return path;
+}
+#endif
+
+ST_FUNC void *clex_malloc(unsigned long size)
+{
+    void *p;
+    p = malloc(size);
+    if (!p && size)
+        clex_error("memory full (malloc)");
+    return p;
+}
+
+ST_FUNC void *clex_mallocz(unsigned long size)
+{
+    void *p;
+    p = clex_malloc(size);
+    memset(p, 0, size);
+    return p;
+}
+
+ST_FUNC void *clex_realloc(void *ptr, unsigned long size)
+{
+    void *ptr1;
+    ptr1 = realloc(ptr, size);
+    if (!ptr1 && size)
+        clex_error("memory full (realloc)");
+    return ptr1;
+}
+
+ST_FUNC void clex_free(void *ptr)
+{
+    free(ptr);
+}
+
+ST_FUNC char *pstrcpy(char *dst, size_t size, const char *src)
+{
+    char *p, *p_end;
+    int c;
+
+    if (size > 0) {
+        p = dst;
+        p_end = dst + size - 1;
+        while (p < p_end) {
+            c = *src++;
+            if (c == '\0')
+                break;
+            *p++ = c;
+        }
+        *p = '\0';
+    }
+    return dst;
+}
+
+ST_FUNC int clex_open(const char *filename)
+{
+    int fd;
+    if (!strcmp(filename, "-"))
+        fd = 0, filename = "<stdin>";
+    else
+        fd = open(filename, O_RDONLY);
+    if (fd < 0)
+        return -1;
+    clex_open_bf(filename, 0);
+    file->fd = fd;
+    return fd;
+}
+
+ST_FUNC void clex_close(void)
+{
+    BufferedFile *bf = file;
+    if (bf->fd > 0)
+        close(bf->fd);
+    file = bf->prev;
+    clex_free(bf);
+}
+
+ST_FUNC void clex_open_bf(const char *filename, int initlen)
+{
+    BufferedFile *bf;
+    int buflen = initlen ? initlen : IO_BUF_SIZE;
+
+    bf = clex_mallocz(sizeof(BufferedFile) + buflen);
+    bf->buf_ptr = bf->buffer;
+    bf->buf_end = bf->buffer + initlen;
+    bf->buf_end[0] = CH_EOB; /* put eob symbol */
+    pstrcpy(bf->filename, sizeof(bf->filename), filename);
+#ifdef _WIN32
+    normalize_slashes(bf->filename);
+#endif
+    bf->line_num = 1;
+    bf->fd = -1;
+    bf->prev = file;
+    bf->prev_tok_flags = tok_flags;
+    file = bf;
+    tok_flags = TOK_FLAG_BOL | TOK_FLAG_BOF;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -444,7 +517,7 @@ typedef struct pp_alloc_t {
     struct pp_alloc_t *next, *prev;
 } pp_alloc_t;
 
-ST_DATA pp_alloc_t pp_allocs;
+static pp_alloc_t pp_allocs;
 
 #define USE_TAL
 
@@ -454,7 +527,7 @@ ST_DATA pp_alloc_t pp_allocs;
 #define tal_new(a,b,c)
 #define tal_delete(a)
 
-ST_DATA void clex_free_impl(void *p)
+static void clex_free_impl(void *p)
 {
     if (p) {
         pp_alloc_t *alloc = ((pp_alloc_t *)p) - 1;
@@ -464,7 +537,7 @@ ST_DATA void clex_free_impl(void *p)
     }
 }
 
-ST_DATA void *clex_realloc_impl(void *p, unsigned size)
+static void *clex_realloc_impl(void *p, unsigned size)
 {
     pp_alloc_t *alloc = NULL;
 
@@ -516,7 +589,7 @@ typedef struct TinyAlloc {
 typedef struct tal_header_t {
     size_t  size; /* word align */
 #ifdef TAL_DEBUG
-    int     line; /* negative line used for double free check */
+    int     line_num; /* negative line_num used for double free check */
     char    file_name[40];
 #endif
 } tal_header_t;
@@ -526,7 +599,7 @@ typedef struct tal_header_t {
 
 /* ------------------------------------------------------------------------- */
 
-ST_DATA TinyAlloc *tal_new(TinyAlloc **pal, unsigned limit, unsigned size)
+static TinyAlloc *tal_new(TinyAlloc **pal, unsigned limit, unsigned size)
 {
     TinyAlloc *al = clex_mallocz(sizeof(TinyAlloc));
     al->p = al->buffer = clex_malloc(size);
@@ -536,7 +609,7 @@ ST_DATA TinyAlloc *tal_new(TinyAlloc **pal, unsigned limit, unsigned size)
     return al;
 }
 
-ST_DATA void tal_delete(TinyAlloc *al)
+static void tal_delete(TinyAlloc *al)
 {
     TinyAlloc *next;
 
@@ -556,9 +629,9 @@ tail_call:
         p = al->buffer;
         while (p < al->p) {
             tal_header_t *header = (tal_header_t *)p;
-            if (header->line > 0) {
+            if (header->line_num > 0) {
                 fprintf(stderr, "%s:%d: chunk of %d bytes leaked\n",
-                        header->file_name, header->line, (int)header->size);
+                        header->file_name, header->line_num, (int)header->size);
             }
             p += header->size + sizeof(tal_header_t);
         }
@@ -574,7 +647,7 @@ tail_call:
     goto tail_call;
 }
 
-ST_DATA void tal_free_impl(TinyAlloc *al, void *p TAL_DEBUG_PARAMS)
+static void tal_free_impl(TinyAlloc *al, void *p TAL_DEBUG_PARAMS)
 {
     if (!p)
         return;
@@ -582,13 +655,13 @@ tail_call:
     if (al->buffer <= (uint8_t *)p && (uint8_t *)p < al->buffer + al->size) {
 #ifdef TAL_DEBUG
         tal_header_t *header = (((tal_header_t *)p) - 1);
-        if (header->line < 0) {
+        if (header->line_num < 0) {
             fprintf(stderr, "%s:%d: TAL_DEBUG: double frees chunk from\n",
                     file, line);
             fprintf(stderr, "%s:%d: %d bytes\n",
-                    header->file_name, (int)-header->line, (int)header->size);
+                    header->file_name, (int)-header->line_num, (int)header->size);
         } else
-            header->line = -header->line;
+            header->line_num = -header->line_num;
 #endif
         al->nb_allocs--;
         if (!al->nb_allocs)
@@ -605,7 +678,7 @@ tail_call:
     }
 }
 
-ST_DATA void *tal_realloc_impl(TinyAlloc **pal, void *p, unsigned size TAL_DEBUG_PARAMS)
+static void *tal_realloc_impl(TinyAlloc **pal, void *p, unsigned size TAL_DEBUG_PARAMS)
 {
     tal_header_t *header;
     void *ret;
@@ -622,7 +695,7 @@ tail_call:
 #ifdef TAL_DEBUG
             { int ofs = strlen(file) + 1 - sizeof header->file_name;
             strcpy(header->file_name, file + (ofs > 0 ? ofs : 0));
-            header->line = line; }
+            header->line_num = line; }
 #endif
             ret = al->p + sizeof(tal_header_t);
             al->p += adj_size + sizeof(tal_header_t);
@@ -630,7 +703,7 @@ tail_call:
                 header = (((tal_header_t *)p) - 1);
                 if (p) memcpy(ret, p, header->size);
 #ifdef TAL_DEBUG
-                header->line = -header->line;
+                header->line_num = -header->line_num;
 #endif
             } else {
                 al->nb_allocs++;
@@ -649,7 +722,7 @@ tail_call:
             header = (((tal_header_t *)p) - 1);
             if (p) memcpy(ret, p, header->size);
 #ifdef TAL_DEBUG
-            header->line = -header->line;
+            header->line_num = -header->line_num;
 #endif
             return ret;
         }
@@ -674,7 +747,7 @@ tail_call:
         header = (((tal_header_t *)p) - 1);
         if (p) memcpy(ret, p, header->size);
 #ifdef TAL_DEBUG
-        header->line = -header->line;
+        header->line_num = -header->line_num;
 #endif
     } else if (al->next) {
         al = al->next;
@@ -704,12 +777,12 @@ tail_call:
 
 #endif /* USE_TAL */
 
-ST_DATA void tal_alloc_init(void)
+static void tal_alloc_init(void)
 {
     pp_allocs.next = pp_allocs.prev = &pp_allocs;
 }
 
-ST_DATA void tal_alloc_free(void)
+static void tal_alloc_free(void)
 {
     while (pp_allocs.next != &pp_allocs)
 	tal_free(toksym_alloc /* dummy */, pp_allocs.next + 1);
@@ -717,7 +790,7 @@ ST_DATA void tal_alloc_free(void)
 
 /* ------------------------------------------------------------------------- */
 /* CString handling */
-ST_FUNC void cstr_realloc(CString *cstr, int new_size)
+static void cstr_realloc(CString *cstr, int new_size)
 {
     int size;
 
@@ -725,22 +798,42 @@ ST_FUNC void cstr_realloc(CString *cstr, int new_size)
     if (size < 8)
         size = 8; /* no need to allocate a too small first string */
     while (size < new_size)
-        size *= 2;
-    cstr->data = realloc(cstr->data, size);
+        size = size * 2;
+    cstr->data = clex_realloc(cstr->data, size);
     cstr->size_allocated = size;
 }
 
 /* add a byte */
-ST_FUNC void cstr_ccat(CString *cstr, int ch)
+ST_INLN void cstr_ccat(CString *cstr, int ch)
 {
     int size;
     size = cstr->size + 1;
     if (size > cstr->size_allocated)
         cstr_realloc(cstr, size);
-    ((unsigned char *)cstr->data)[size - 1] = ch;
+    cstr->data[size - 1] = ch;
     cstr->size = size;
 }
 
+ST_INLN char *unicode_to_utf8 (char *b, uint32_t Uc)
+{
+    if (Uc<0x80) *b++=Uc;
+    else if (Uc<0x800) *b++=192+Uc/64, *b++=128+Uc%64;
+    else if (Uc-0xd800u<0x800) goto error;
+    else if (Uc<0x10000) *b++=224+Uc/4096, *b++=128+Uc/64%64, *b++=128+Uc%64;
+    else if (Uc<0x110000) *b++=240+Uc/262144, *b++=128+Uc/4096%64, *b++=128+Uc/64%64, *b++=128+Uc%64;
+    else error: clex_error("0x%x is not a valid universal character", Uc);
+    return b;
+}
+
+/* add a unicode character expanded into utf8 */
+ST_INLN void cstr_u8cat(CString *cstr, int ch)
+{
+    char buf[4], *e;
+    e = unicode_to_utf8(buf, (uint32_t)ch);
+    cstr_cat(cstr, buf, e - buf);
+}
+
+/* add string of 'len', or of its len/len+1 when 'len' == -1/0 */
 ST_FUNC void cstr_cat(CString *cstr, const char *str, int len)
 {
     int size;
@@ -749,7 +842,7 @@ ST_FUNC void cstr_cat(CString *cstr, const char *str, int len)
     size = cstr->size + len;
     if (size > cstr->size_allocated)
         cstr_realloc(cstr, size);
-    memmove(((unsigned char *)cstr->data) + cstr->size, str, len);
+    memmove(cstr->data + cstr->size, str, len);
     cstr->size = size;
 }
 
@@ -762,11 +855,16 @@ ST_FUNC void cstr_new(CString *cstr)
 ST_FUNC void cstr_free(CString *cstr)
 {
     clex_free(cstr->data);
-    cstr_new(cstr);
+}
+
+/* reset string to empty */
+ST_FUNC void cstr_reset(CString *cstr)
+{
+    cstr->size = 0;
 }
 
 /* XXX: unicode ? */
-ST_FUNC void add_char(CString *cstr, int c)
+static void add_char(CString *cstr, int c)
 {
     if (c == '\'' || c == '\"' || c == '\\') {
         /* XXX: could be more precise if char or string */
@@ -786,323 +884,14 @@ ST_FUNC void add_char(CString *cstr, int c)
     }
 }
 
-/* reset string to empty */
-ST_FUNC void cstr_reset(CString *cstr)
-{
-    cstr->size = 0;
-}
-
-/* handle just the EOB case, but not stray */
-#define PEEKC_EOB(c, p)\
-{\
-    p++;\
-    c = *p;\
-    if (c == '\\') {\
-        file->buf_ptr = p;\
-        c = handle_eob();\
-        p = file->buf_ptr;\
-    }\
-}
-
-/* handle the complicated stray case */
-#define PEEKC(c, p)\
-{\
-    c = *++p;\
-    if (c == '\\')\
-        c = handle_stray(&p); \
-}
-
-/* read next char from current input file and handle end of input buffer */
-ST_DATA int next_c(void)
-{
-    int ch = *++file->buf_ptr;
-    /* end of buffer/file handling */
-    if (ch == CH_EOB && file->buf_ptr >= file->buf_end)
-        ch = handle_eob();
-    return ch;
-}
-
-/* input with '\[\r]\n' handling. */
-ST_DATA int handle_stray_noerror(int err)
-{
-    int ch;
-    while ((ch = next_c()) == '\\') {
-        ch = next_c();
-        if (ch == '\n') {
-    newl:
-            file->line_num++;
-        } else {
-            if (ch == '\r') {
-                ch = next_c();
-                if (ch == '\n')
-                    goto newl;
-                *--file->buf_ptr = '\r';
-            }
-            if (err)
-                clex_error("stray '\\' in program");
-            /* may take advantage of 'BufferedFile.unget[4}' */
-            return *--file->buf_ptr = '\\';
-        }
-    }
-    return ch;
-}
-
-/* skip the stray and handle the \\n case. Output an error if
-   incorrect char after the stray */
-ST_DATA int handle_stray(uint8_t **p)
-{
-    int c;
-    file->buf_ptr = *p - 1;
-    c = handle_stray_noerror(!(parse_flags & PARSE_FLAG_ACCEPT_STRAYS));
-    *p = file->buf_ptr;
-    return c;
-}
-
-ST_FUNC void *clex_malloc(unsigned long size)
-{
-    void *p;
-    p = malloc(size);
-    if (!p && size)
-        clex_error("memory full (malloc)");
-    return p;
-}
-
-ST_FUNC void *clex_mallocz(unsigned long size)
-{
-    void *p;
-    p = clex_malloc(size);
-    memset(p, 0, size);
-    return p;
-}
-
-ST_FUNC void *clex_realloc(void *ptr, unsigned long size)
-{
-    void *ptr1;
-    ptr1 = realloc(ptr, size);
-    if (!ptr1 && size)
-        clex_error("memory full (realloc)");
-    return ptr1;
-}
-
-ST_FUNC void clex_free(void *ptr)
-{
-    free(ptr);
-}
-
-ST_FUNC NORETURN void clex_error(const char *fmt, ...)
-{
-    va_list ap;
-
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
-
-    if (fmt[0] && fmt[strlen(fmt)-1] == ':')
-        fprintf(stderr, " %s", strerror(errno));
-    fputc('\n', stderr);
-
-    exit(EXIT_FAILURE);
-}
-
-ST_FUNC char *pstrcpy(char *dst, size_t size, const char *src)
-{
-    char *p, *p_end;
-    int c;
-
-    if (size > 0) {
-        p = dst;
-        p_end = dst + size - 1;
-        while (p < p_end) {
-            c = *src++;
-            if (c == '\0')
-                break;
-            *p++ = c;
-        }
-        *p = '\0';
-    }
-    return dst;
-}
-
-ST_FUNC int clex_open(const char *filename)
-{
-    int fd;
-    if (!strcmp(filename, "-"))
-        fd = 0, filename = "<stdin>";
-    else
-    fd = open(filename, O_RDONLY);
-    if (fd < 0)
-        return -1;
-    clex_open_bf(filename, 0);
-    file->fd = fd;
-    return fd;
-}
-
-ST_FUNC void clex_close(void)
-{
-    BufferedFile *bf = file;
-    if (bf->fd > 0)
-        close(bf->fd);
-    file = bf->prev;
-    clex_free(bf);
-}
-
-ST_FUNC void clex_open_bf(const char *filename, int initlen)
-{
-    BufferedFile *bf;
-    int buflen = initlen ? initlen : IO_BUF_SIZE;
-
-    bf = clex_mallocz(sizeof(BufferedFile) + buflen);
-    bf->buf_ptr = bf->buffer;
-    bf->buf_end = bf->buffer + initlen;
-    bf->buf_end[0] = CH_EOB;
-    pstrcpy(bf->filename, sizeof(bf->filename), filename);
-    bf->line_num = 1;
-    bf->fd = -1;
-    bf->prev = file;
-    file = bf;
-}
-
-ST_FUNC int handle_eob(void)
-{
-    BufferedFile *bf = file;
-    int len;
-
-    if (bf->buf_ptr >= bf->buf_end) {
-        if (bf->fd >= 0) {
-            len = IO_BUF_SIZE;
-            len = read(bf->fd, bf->buffer, IO_BUF_SIZE);
-            if (len < 0)
-                len = 0;
-        } else {
-            len = 0;
-        }
-        bf->buf_ptr = bf->buffer;
-        bf->buf_end = bf->buffer + len;
-        *bf->buf_end = CH_EOB;
-    }
-    if (bf->buf_ptr < bf->buf_end)
-        return *bf->buf_ptr;
-    return CH_EOF;
-}
-
-/* C comments */
-ST_FUNC uint8_t *parse_comment(uint8_t *p)
-{
-    int c;
-
-    p++;
-    for(;;) {
-        /* fast skip loop */
-        for(;;) {
-            c = *p;
-            if (c == '\n' || c == '*' || c == '\\')
-                break;
-            p++;
-            c = *p;
-            if (c == '\n' || c == '*' || c == '\\')
-                break;
-            p++;
-        }
-        /* now we can handle all the cases */
-        if (c == '\n') {
-            file->line_num++;
-            p++;
-        } else if (c == '*') {
-            p++;
-            for(;;) {
-                c = *p;
-                if (c == '*') {
-                    p++;
-                } else if (c == '/') {
-                    goto end_of_comment;
-                } else if (c == '\\') {
-                    file->buf_ptr = p;
-                    c = handle_eob();
-                    p = file->buf_ptr;
-                    if (c == CH_EOF)
-                        clex_error("unexpected end of file in comment");
-                    if (c == '\\') {
-                        /* skip '\[\r]\n', otherwise just skip the stray */
-                        while (c == '\\') {
-                            PEEKC_EOB(c, p);
-                            if (c == '\n') {
-                                file->line_num++;
-                                PEEKC_EOB(c, p);
-                            } else if (c == '\r') {
-                                PEEKC_EOB(c, p);
-                                if (c == '\n') {
-                                    file->line_num++;
-                                    PEEKC_EOB(c, p);
-                                }
-                            } else {
-                                goto after_star;
-                            }
-                        }
-                    }
-                } else {
-                    break;
-                }
-            }
-        after_star: ;
-        } else {
-            /* stray, eob or eof */
-            file->buf_ptr = p;
-            c = handle_eob();
-            p = file->buf_ptr;
-            if (c == CH_EOF) {
-                clex_error("unexpected end of file in comment");
-            } else if (c == '\\') {
-                p++;
-            }
-        }
-    }
- end_of_comment:
-    p++;
-    return p;
-}
-
-ST_FUNC uint8_t *parse_line_comment(uint8_t *p)
-{
-    int c;
-
-    p++;
-    for(;;) {
-        c = *p;
-redo:
-        if (c == '\n' || c == CH_EOF) {
-            break;
-        } else if (c == '\\') {
-            file->buf_ptr = p;
-            c = handle_eob();
-            p = file->buf_ptr;
-            if (c == '\\') {
-                PEEKC_EOB(c, p);
-                if (c == '\n') {
-                    file->line_num++;
-                    PEEKC_EOB(c, p);
-                } else if (c == '\r') {
-                    PEEKC_EOB(c, p);
-                    if (c == '\n') {
-                        file->line_num++;
-                        PEEKC_EOB(c, p);
-                    }
-                }
-            } else {
-                goto redo;
-            }
-        } else {
-            p++;
-        }
-    }
-    return p;
-}
-
-ST_DATA TokenSym *tok_alloc_new(TokenSym **pts, const char *str, int len)
+/* ------------------------------------------------------------------------- */
+/* allocate a new token */
+static TokenSym *tok_alloc_new(TokenSym **pts, const char *str, int len)
 {
     TokenSym *ts, **ptable;
     int i;
 
-    if (tok_ident >= SYM_FIRST_ANOM) 
+    if (tok_ident >= SYM_FIRST_ANOM)
         clex_error("memory full (symbols)");
 
     /* expand token table if needed */
@@ -1137,7 +926,7 @@ ST_FUNC TokenSym *tok_alloc(const char *str, int len)
     TokenSym *ts, **pts;
     int i;
     unsigned int h;
-    
+
     h = TOK_HASH_INIT;
     for(i=0;i<len;i++)
         h = TOK_HASH_FUNC(h, ((unsigned char *)str)[i]);
@@ -1155,8 +944,622 @@ ST_FUNC TokenSym *tok_alloc(const char *str, int len)
     return tok_alloc_new(pts, str, len);
 }
 
-/* XXX: buffer overflow */
-/* XXX: float tokens */
+/* return the current character, handling end of block if necessary
+   (but not stray) */
+static int handle_eob(void)
+{
+    BufferedFile *bf = file;
+    int len;
+
+    /* only tries to read if really end of buffer */
+    if (bf->buf_ptr >= bf->buf_end) {
+        if (bf->fd >= 0) {
+#if defined(PARSE_DEBUG)
+            len = 1;
+#else
+            len = IO_BUF_SIZE;
+#endif
+            len = read(bf->fd, bf->buffer, len);
+            if (len < 0)
+                len = 0;
+        } else {
+            len = 0;
+        }
+        bf->buf_ptr = bf->buffer;
+        bf->buf_end = bf->buffer + len;
+        *bf->buf_end = CH_EOB;
+    }
+    if (bf->buf_ptr < bf->buf_end) {
+        return bf->buf_ptr[0];
+    } else {
+        bf->buf_ptr = bf->buf_end;
+        return CH_EOF;
+    }
+}
+
+/* read next char from current input file and handle end of input buffer */
+static int next_c(void)
+{
+    int ch = *++file->buf_ptr;
+    /* end of buffer/file handling */
+    if (ch == CH_EOB && file->buf_ptr >= file->buf_end)
+        ch = handle_eob();
+    return ch;
+}
+
+/* input with '\[\r]\n' handling. */
+static int handle_stray_noerror(int err)
+{
+    int ch;
+    while ((ch = next_c()) == '\\') {
+        ch = next_c();
+        if (ch == '\n') {
+    newl:
+            file->line_num++;
+        } else {
+            if (ch == '\r') {
+                ch = next_c();
+                if (ch == '\n')
+                    goto newl;
+                *--file->buf_ptr = '\r';
+            }
+            if (err)
+                clex_error("stray '\\' in program");
+            /* may take advantage of 'BufferedFile.unget[4}' */
+            return *--file->buf_ptr = '\\';
+        }
+    }
+    return ch;
+}
+
+#define ninp() handle_stray_noerror(0)
+
+/* handle '\\' in strings, comments and skipped regions */
+static int handle_bs(uint8_t **p)
+{
+    int c;
+    file->buf_ptr = *p - 1;
+    c = ninp();
+    *p = file->buf_ptr;
+    return c;
+}
+
+/* skip the stray and handle the \\n case. Output an error if
+   incorrect char after the stray */
+static int handle_stray(uint8_t **p)
+{
+    int c;
+    file->buf_ptr = *p - 1;
+    c = handle_stray_noerror(!(parse_flags & PARSE_FLAG_ACCEPT_STRAYS));
+    *p = file->buf_ptr;
+    return c;
+}
+
+/* handle the complicated stray case */
+#define PEEKC(c, p)\
+{\
+    c = *++p;\
+    if (c == '\\')\
+        c = handle_stray(&p); \
+}
+
+/* single line C++ comments */
+static uint8_t *parse_line_comment(uint8_t *p)
+{
+    int c;
+    for(;;) {
+        for (;;) {
+            c = *++p;
+    redo:
+            if (c == '\n' || c == '\\')
+                break;
+            c = *++p;
+            if (c == '\n' || c == '\\')
+                break;
+        }
+        if (c == '\n')
+            break;
+        c = handle_bs(&p);
+        if (c == CH_EOF)
+            break;
+        if (c != '\\')
+            goto redo;
+    }
+    return p;
+}
+
+/* C comments */
+static uint8_t *parse_comment(uint8_t *p)
+{
+    int c;
+    for(;;) {
+        /* fast skip loop */
+        for(;;) {
+            c = *++p;
+        redo:
+            if (c == '\n' || c == '*' || c == '\\')
+                break;
+            c = *++p;
+            if (c == '\n' || c == '*' || c == '\\')
+                break;
+        }
+        /* now we can handle all the cases */
+        if (c == '\n') {
+            file->line_num++;
+        } else if (c == '*') {
+            do {
+                c = *++p;
+            } while (c == '*');
+            if (c == '\\')
+                c = handle_bs(&p);
+            if (c == '/')
+                break;
+            goto check_eof;
+        } else {
+            c = handle_bs(&p);
+        check_eof:
+            if (c == CH_EOF)
+                clex_error("unexpected end of file in comment");
+            if (c != '\\')
+                goto redo;
+        }
+    }
+    return p + 1;
+}
+
+/* parse a string without interpreting escapes */
+static uint8_t *parse_pp_string(uint8_t *p, int sep, CString *str)
+{
+    int c;
+    for(;;) {
+        c = *++p;
+    redo:
+        if (c == sep) {
+            break;
+        } else if (c == '\\') {
+            c = handle_bs(&p);
+            if (c == CH_EOF) {
+        unterminated_string:
+                /* XXX: indicate line number of start of string */
+                tok_flags &= ~TOK_FLAG_BOL;
+                clex_error("missing terminating %c character", sep);
+            } else if (c == '\\') {
+                if (str)
+                    cstr_ccat(str, c);
+                c = *++p;
+                /* add char after '\\' unconditionally */
+                if (c == '\\') {
+                    c = handle_bs(&p);
+                    if (c == CH_EOF)
+                        goto unterminated_string;
+                }
+                goto add_char;
+            } else {
+                goto redo;
+            }
+        } else if (c == '\n') {
+        add_lf:
+            if (ACCEPT_LF_IN_STRINGS) {
+                file->line_num++;
+                goto add_char;
+            } else if (str) { /* not skipping */
+                goto unterminated_string;
+            } else {
+                //fprintf(stderr, "missing terminating %c character", sep);
+                return p;
+            }
+        } else if (c == '\r') {
+            c = *++p;
+            if (c == '\\')
+                c = handle_bs(&p);
+            if (c == '\n')
+                goto add_lf;
+            if (c == CH_EOF)
+                goto unterminated_string;
+            if (str)
+                cstr_ccat(str, '\r');
+            goto redo;
+        } else {
+        add_char:
+            if (str)
+                cstr_ccat(str, c);
+        }
+    }
+    p++;
+    return p;
+}
+
+/* token string handling */
+ST_INLN void tok_str_new(TokenString *s)
+{
+    s->str = NULL;
+    s->len = s->need_spc = 0;
+    s->allocated_len = 0;
+    s->last_line_num = -1;
+}
+
+ST_FUNC void tok_str_free_str(int *str)
+{
+    tal_free(tokstr_alloc, str);
+}
+
+ST_FUNC int *tok_str_realloc(TokenString *s, int new_size)
+{
+    int *str, size;
+
+    size = s->allocated_len;
+    if (size < 16)
+        size = 16;
+    while (size < new_size)
+        size = size * 2;
+    if (size > s->allocated_len) {
+        str = tal_realloc(tokstr_alloc, s->str, size * sizeof(int));
+        s->allocated_len = size;
+        s->str = str;
+    }
+    return s->str;
+}
+
+/* ------------------------------------------------------------------------- */
+/* public functions */
+
+PUB_FUNC void skip(int c)
+{
+    if (tok != c) {
+        char tmp[40];
+        pstrcpy(tmp, sizeof tmp, get_tok_str(c, &tokc));
+        clex_error("'%s' expected (got '%s')", tmp, get_tok_str(tok, &tokc));
+    }
+    next();
+}
+
+#define PARSE2(c1, tok1, c2, tok2)              \
+    case c1:                                    \
+        PEEKC(c, p);                            \
+        if (c == c2) {                          \
+            p++;                                \
+            tok = tok2;                         \
+        } else {                                \
+            tok = tok1;                         \
+        }                                       \
+        break;
+
+PUB_FUNC void next(void)
+{
+    int t, c, is_long, len;
+    TokenSym *ts;
+    uint8_t *p, *p1;
+    unsigned int h;
+
+    p = file->buf_ptr;
+ redo_no_start:
+    c = *p;
+    switch(c) {
+    case ' ':
+    case '\t':
+        tok = c;
+        p++;
+ maybe_space:
+        if (parse_flags & PARSE_FLAG_SPACES)
+            goto keep_tok_flags;
+        while (isidnum_table[*p - CH_EOF] & IS_SPC)
+            ++p;
+        goto redo_no_start;
+    case '\f':
+    case '\v':
+    case '\r':
+        p++;
+        goto redo_no_start;
+    case '\\':
+        /* first look if it is in fact an end of buffer */
+        c = handle_stray(&p);
+        if (c == '\\')
+            goto parse_simple;
+        if (c == CH_EOF) {
+            if (!(tok_flags & TOK_FLAG_BOL)) {
+                /* add implicit newline */
+                goto maybe_newline;
+            } else {
+                tok = TOK_EOF;
+            }
+        } else {
+            goto redo_no_start;
+        } break;
+
+
+    case '\n':
+        file->line_num++;
+        p++;
+maybe_newline:
+        tok_flags |= TOK_FLAG_BOL;
+        if (0 == (parse_flags & PARSE_FLAG_LINEFEED))
+            goto redo_no_start;
+        tok = TOK_LINEFEED;
+        goto keep_tok_flags;
+
+    case 'a': case 'b': case 'c': case 'd':
+    case 'e': case 'f': case 'g': case 'h':
+    case 'i': case 'j': case 'k': case 'l':
+    case 'm': case 'n': case 'o': case 'p':
+    case 'q': case 'r': case 's': case 't':
+    case 'u': case 'v': case 'w': case 'x':
+    case 'y': case 'z':
+    case 'A': case 'B': case 'C': case 'D':
+    case 'E': case 'F': case 'G': case 'H':
+    case 'I': case 'J': case 'K':
+    case 'M': case 'N': case 'O': case 'P':
+    case 'Q': case 'R': case 'S': case 'T':
+    case 'U': case 'V': case 'W': case 'X':
+    case 'Y': case 'Z':
+    case '_':
+    parse_ident_fast:
+        p1 = p;
+        h = TOK_HASH_INIT;
+        h = TOK_HASH_FUNC(h, c);
+        while (c = *++p, isidnum_table[c - CH_EOF] & (IS_ID|IS_NUM))
+            h = TOK_HASH_FUNC(h, c);
+        len = p - p1;
+        if (c != '\\') {
+            TokenSym **pts;
+
+            /* fast case : no stray found, so we have the full token
+               and we have already hashed it */
+            h &= (TOK_HASH_SIZE - 1);
+            pts = &hash_ident[h];
+            for(;;) {
+                ts = *pts;
+                if (!ts)
+                    break;
+                if (ts->len == len && !memcmp(ts->str, p1, len))
+                    goto token_found;
+                pts = &(ts->hash_next);
+            }
+            ts = tok_alloc_new(pts, (char *) p1, len);
+        token_found: ;
+        } else {
+            /* slower case */
+            cstr_reset(&tokcstr);
+            cstr_cat(&tokcstr, (char *) p1, len);
+            p--;
+            PEEKC(c, p);
+            while (isidnum_table[c - CH_EOF] & (IS_ID|IS_NUM))
+            {
+                cstr_ccat(&tokcstr, c);
+                PEEKC(c, p);
+            }
+            ts = tok_alloc(tokcstr.data, tokcstr.size);
+        }
+        tok = ts->tok;
+        break;
+    case 'L':
+        t = p[1];
+        if (t == '\'' || t == '\"' || t == '\\') {
+            PEEKC(c, p);
+            if (c == '\'' || c == '\"') {
+                is_long = 1;
+                goto str_const;
+            }
+            *--p = c = 'L';
+        }
+        goto parse_ident_fast;
+
+    case '0': case '1': case '2': case '3':
+    case '4': case '5': case '6': case '7':
+    case '8': case '9':
+        t = c;
+        PEEKC(c, p);
+        /* after the first digit, accept digits, alpha, '.' or sign if
+           prefixed by 'eEpP' */
+    parse_num:
+        cstr_reset(&tokcstr);
+        for(;;) {
+            cstr_ccat(&tokcstr, t);
+            if (!((isidnum_table[c - CH_EOF] & (IS_ID|IS_NUM))
+                  || c == '.'
+                  || ((c == '+' || c == '-')
+                      && ( (t == 'e' || t == 'E')
+                          || t == 'p' || t == 'P'))))
+                break;
+            t = c;
+            PEEKC(c, p);
+        }
+        /* We add a trailing '\0' to ease parsing */
+        cstr_ccat(&tokcstr, '\0');
+        tokc.str.size = tokcstr.size;
+        tokc.str.data = tokcstr.data;
+        tok = TOK_PPNUM;
+        break;
+
+    case '.':
+        /* special dot handling because it can also start a number */
+        PEEKC(c, p);
+        if (isnum(c)) {
+            t = '.';
+            goto parse_num;
+        } else if ((isidnum_table['.' - CH_EOF] & IS_ID)
+                   && (isidnum_table[c - CH_EOF] & (IS_ID|IS_NUM))) {
+            *--p = c = '.';
+            goto parse_ident_fast;
+        } else if (c == '.') {
+            PEEKC(c, p);
+            if (c == '.') {
+                p++;
+                tok = TOK_DOTS;
+            } else {
+                *--p = '.'; /* may underflow into file->unget[] */
+                tok = '.';
+            }
+        } else {
+            tok = '.';
+        }
+        break;
+    case '\'':
+    case '\"':
+        is_long = 0;
+    str_const:
+        cstr_reset(&tokcstr);
+        if (is_long)
+            cstr_ccat(&tokcstr, 'L');
+        cstr_ccat(&tokcstr, c);
+        p = parse_pp_string(p, c, &tokcstr);
+        cstr_ccat(&tokcstr, c);
+        cstr_ccat(&tokcstr, '\0');
+        tokc.str.size = tokcstr.size;
+        tokc.str.data = tokcstr.data;
+        tok = TOK_PPSTR;
+        break;
+
+    case '<':
+        PEEKC(c, p);
+        if (c == '=') {
+            p++;
+            tok = TOK_LE;
+        } else if (c == '<') {
+            PEEKC(c, p);
+            if (c == '=') {
+                p++;
+                tok = TOK_A_SHL;
+            } else {
+                tok = TOK_SHL;
+            }
+        } else {
+            tok = TOK_LT;
+        }
+        break;
+    case '>':
+        PEEKC(c, p);
+        if (c == '=') {
+            p++;
+            tok = TOK_GE;
+        } else if (c == '>') {
+            PEEKC(c, p);
+            if (c == '=') {
+                p++;
+                tok = TOK_A_SAR;
+            } else {
+                tok = TOK_SAR;
+            }
+        } else {
+            tok = TOK_GT;
+        }
+        break;
+
+    case '&':
+        PEEKC(c, p);
+        if (c == '&') {
+            p++;
+            tok = TOK_LAND;
+        } else if (c == '=') {
+            p++;
+            tok = TOK_A_AND;
+        } else {
+            tok = '&';
+        }
+        break;
+
+    case '|':
+        PEEKC(c, p);
+        if (c == '|') {
+            p++;
+            tok = TOK_LOR;
+        } else if (c == '=') {
+            p++;
+            tok = TOK_A_OR;
+        } else {
+            tok = '|';
+        }
+        break;
+
+    case '+':
+        PEEKC(c, p);
+        if (c == '+') {
+            p++;
+            tok = TOK_INC;
+        } else if (c == '=') {
+            p++;
+            tok = TOK_A_ADD;
+        } else {
+            tok = '+';
+        }
+        break;
+
+    case '-':
+        PEEKC(c, p);
+        if (c == '-') {
+            p++;
+            tok = TOK_DEC;
+        } else if (c == '=') {
+            p++;
+            tok = TOK_A_SUB;
+        } else if (c == '>') {
+            p++;
+            tok = TOK_ARROW;
+        } else {
+            tok = '-';
+        }
+        break;
+
+    PARSE2('!', '!', '=', TOK_NE)
+    PARSE2('=', '=', '=', TOK_EQ)
+    PARSE2('*', '*', '=', TOK_A_MUL)
+    PARSE2('%', '%', '=', TOK_A_MOD)
+    PARSE2('^', '^', '=', TOK_A_XOR)
+
+        /* comments or operator */
+    case '/':
+        PEEKC(c, p);
+        if (c == '*') {
+            p = parse_comment(p);
+            /* comments replaced by a blank */
+            tok = ' ';
+            goto maybe_space;
+        } else if (c == '/') {
+            p = parse_line_comment(p);
+            tok = ' ';
+            goto maybe_space;
+        } else if (c == '=') {
+            p++;
+            tok = TOK_A_DIV;
+        } else {
+            tok = '/';
+        }
+        break;
+
+        /* simple tokens */
+    case '(':
+    case ')':
+    case '[':
+    case ']':
+    case '{':
+    case '}':
+    case ',':
+    case ';':
+    case ':':
+    case '?':
+    case '~':
+    parse_simple:
+        tok = c;
+        p++;
+        break;
+    case 0xEF: /* UTF8 BOM ? */
+        if (p[1] == 0xBB && p[2] == 0xBF && p == file->buffer) {
+            p += 3;
+            goto redo_no_start;
+        }
+    default:
+        if (c >= 0x80 && c <= 0xFF) /* utf8 identifiers */
+	    goto parse_ident_fast;
+        clex_error("unrecognized character \\x%02x", c);
+        break;
+    }
+    tok_flags = 0;
+keep_tok_flags:
+    file->buf_ptr = p;
+#if defined(PARSE_DEBUG)
+    printf("token = %d %s\n", tok, get_tok_str(tok, &tokc));
+#endif
+}
+
 ST_FUNC const char *get_tok_str(int v, CValue *cv)
 {
     char *p;
@@ -1264,487 +1667,30 @@ ST_FUNC const char *get_tok_str(int v, CValue *cv)
     return cstr_buf.data;
 }
 
-
-#define PARSE2(c1, tok1, c2, tok2)              \
-    case c1:                                    \
-        PEEKC(c, p);                            \
-        if (c == c2) {                          \
-            p++;                                \
-            tok = tok2;                         \
-        } else {                                \
-            tok = tok1;                         \
-        }                                       \
-        break;
-
-#define ninp() handle_stray_noerror(0)
-
-/* handle '\\' in strings, comments and skipped regions */
-ST_DATA int handle_bs(uint8_t **p)
+PUB_FUNC NORETURN void clex_error(const char *fmt, ...)
 {
-    int c;
-    file->buf_ptr = *p - 1;
-    c = ninp();
-    *p = file->buf_ptr;
-    return c;
+    va_list ap;
+
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+
+    if (fmt[0] && fmt[strlen(fmt)-1] == ':')
+        fprintf(stderr, " %s", strerror(errno));
+    fputc('\n', stderr);
+
+    exit(EXIT_FAILURE);
 }
 
-/* parse a string without interpreting escapes */
-ST_DATA uint8_t *parse_pp_string(uint8_t *p, int sep, CString *str)
+PUB_FUNC void expect(const char *msg)
 {
-    int c;
-    for(;;) {
-        c = *++p;
-    redo:
-        if (c == sep) {
-            break;
-        } else if (c == '\\') {
-            c = handle_bs(&p);
-            if (c == CH_EOF) {
-        unterminated_string:
-                /* XXX: indicate line number of start of string */
-                //tok_flags &= ~TOK_FLAG_BOL;
-                clex_error("missing terminating %c character", sep);
-            } else if (c == '\\') {
-                if (str)
-                    cstr_ccat(str, c);
-                c = *++p;
-                /* add char after '\\' unconditionally */
-                if (c == '\\') {
-                    c = handle_bs(&p);
-                    if (c == CH_EOF)
-                        goto unterminated_string;
-                }
-                goto add_char;
-            } else {
-                goto redo;
-            }
-        } else if (c == '\n') {
-        add_lf:
-#define ACCEPT_LF_IN_STRINGS 0
-            if (ACCEPT_LF_IN_STRINGS) {
-                file->line_num++;
-                goto add_char;
-            } else if (str) { /* not skipping */
-                goto unterminated_string;
-            } else {
-                return p;
-            }
-        } else if (c == '\r') {
-            c = *++p;
-            if (c == '\\')
-                c = handle_bs(&p);
-            if (c == '\n')
-                goto add_lf;
-            if (c == CH_EOF)
-                goto unterminated_string;
-            if (str)
-                cstr_ccat(str, '\r');
-            goto redo;
-        } else {
-        add_char:
-            if (str)
-                cstr_ccat(str, c);
-        }
-    }
-    p++;
-    return p;
-}
-//ST_FUNC void next(void)
-void next(void)
-{
-    int t, c, is_long, len;
-    TokenSym *ts;
-    uint8_t *p, *p1;
-    unsigned int h;
-
-    p = file->buf_ptr;
- redo_no_start:
-    c = *p;
-    switch(c) {
-    case ' ':
-    case '\t':
-        tok = c;
-        p++;
- maybe_space:
-        if (parse_flags & PARSE_FLAG_SPACES)
-            goto keep_tok_flags;
-        while (isidnum_table[*p - CH_EOF] & IS_SPC)
-            ++p;
-        goto redo_no_start;
-    case '\f':
-    case '\v':
-    case '\r':
-        p++;
-        goto redo_no_start;
-    case '\\':
-        /* first look if it is in fact an end of buffer */
-        c = handle_stray(&p);
-        if (c == '\\')
-            goto parse_simple;
-        if (c == CH_EOF) {
-            if (!(tok_flags & TOK_FLAG_BOL)) {
-                /* add implicit newline */
-                goto maybe_newline;
-            } else {
-                tok = TOK_EOF;
-            }
-        } else {
-            goto redo_no_start;
-        } break;
-
-    case '\n':
-        file->line_num++;
-        p++;
-maybe_newline:
-        tok_flags |= TOK_FLAG_BOL;
-        if (0 == (parse_flags & PARSE_FLAG_LINEFEED))
-            goto redo_no_start;
-        tok = TOK_LINEFEED;
-        goto keep_tok_flags;
-
-    case 'a': case 'b': case 'c': case 'd':
-    case 'e': case 'f': case 'g': case 'h':
-    case 'i': case 'j': case 'k': case 'l':
-    case 'm': case 'n': case 'o': case 'p':
-    case 'q': case 'r': case 's': case 't':
-    case 'u': case 'v': case 'w': case 'x':
-    case 'y': case 'z': 
-    case 'A': case 'B': case 'C': case 'D':
-    case 'E': case 'F': case 'G': case 'H':
-    case 'I': case 'J': case 'K': 
-    case 'M': case 'N': case 'O': case 'P':
-    case 'Q': case 'R': case 'S': case 'T':
-    case 'U': case 'V': case 'W': case 'X':
-    case 'Y': case 'Z': 
-    case '_':
-    parse_ident_fast:
-        p1 = p;
-        h = TOK_HASH_INIT;
-        h = TOK_HASH_FUNC(h, c);
-        while (c = *++p, isidnum_table[c - CH_EOF] & (IS_ID|IS_NUM))
-            h = TOK_HASH_FUNC(h, c);
-        len = p - p1;
-        if (c != '\\') {
-            TokenSym **pts;
-
-            /* fast case : no stray found, so we have the full token
-               and we have already hashed it */
-            h &= (TOK_HASH_SIZE - 1);
-            pts = &hash_ident[h];
-            for(;;) {
-                ts = *pts;
-                if (!ts)
-                    break;
-                if (ts->len == len && !memcmp(ts->str, p1, len))
-                    goto token_found;
-                pts = &(ts->hash_next);
-            }
-            ts = tok_alloc_new(pts, (char *) p1, len);
-        token_found: ;
-        } else {
-            /* slower case */
-            cstr_reset(&tokcstr);
-            cstr_cat(&tokcstr, (char *) p1, len);
-            p--;
-            PEEKC(c, p);
-            while (isidnum_table[c - CH_EOF] & (IS_ID|IS_NUM))
-            {
-                cstr_ccat(&tokcstr, c);
-                PEEKC(c, p);
-            }
-            ts = tok_alloc(tokcstr.data, tokcstr.size);
-        }
-        tok = ts->tok;
-        break;
-    case 'L':
-        t = p[1];
-        if (t == '\'' || t == '\"' || t == '\\') {
-            PEEKC(c, p);
-            if (c == '\'' || c == '\"') {
-                is_long = 1;
-                goto str_const;
-            }
-            *--p = c = 'L';
-        }
-        goto parse_ident_fast;
-
-    case '0': case '1': case '2': case '3':
-    case '4': case '5': case '6': case '7':
-    case '8': case '9':
-        t = c;
-        PEEKC(c, p);
-        /* after the first digit, accept digits, alpha, '.' or sign if
-           prefixed by 'eEpP' */
-    parse_num:
-        cstr_reset(&tokcstr);
-        for(;;) {
-            cstr_ccat(&tokcstr, t);
-            if (!((isidnum_table[c - CH_EOF] & (IS_ID|IS_NUM))
-                  || c == '.'
-                  || ((c == '+' || c == '-')
-                      && (((t == 'e' || t == 'E')
-                            && !(parse_flags & PARSE_FLAG_ASM_FILE
-                                /* 0xe+1 is 3 tokens in asm */
-                                && ((char*)tokcstr.data)[0] == '0'
-                                && toup(((char*)tokcstr.data)[1]) == 'X'))
-                          || t == 'p' || t == 'P'))))
-                break;
-            t = c;
-            PEEKC(c, p);
-        }
-        /* We add a trailing '\0' to ease parsing */
-        cstr_ccat(&tokcstr, '\0');
-        tokc.str.size = tokcstr.size;
-        tokc.str.data = tokcstr.data;
-        tok = TOK_PPNUM;
-        break;
-
-    case '.':
-        /* special dot handling because it can also start a number */
-        PEEKC(c, p);
-        if (isnum(c)) {
-            t = '.';
-            goto parse_num;
-        } else if ((isidnum_table['.' - CH_EOF] & IS_ID)
-                   && (isidnum_table[c - CH_EOF] & (IS_ID|IS_NUM))) {
-            *--p = c = '.';
-            goto parse_ident_fast;
-        } else if (c == '.') {
-            PEEKC(c, p);
-            if (c == '.') {
-                p++;
-                tok = TOK_DOTS;
-            } else {
-                *--p = '.'; /* may underflow into file->unget[] */
-                tok = '.';
-            }
-        } else {
-            tok = '.';
-        }
-        break;
-    case '\'':
-    case '\"':
-        is_long = 0;
-    str_const:
-        cstr_reset(&tokcstr);
-        if (is_long)
-            cstr_ccat(&tokcstr, 'L');
-        cstr_ccat(&tokcstr, c);
-        p = parse_pp_string(p, c, &tokcstr);
-        cstr_ccat(&tokcstr, c);
-        cstr_ccat(&tokcstr, '\0');
-        tokc.str.size = tokcstr.size;
-        tokc.str.data = tokcstr.data;
-        tok = TOK_PPSTR;
-        break;
-
-    case '<':
-        PEEKC(c, p);
-        if (c == '=') {
-            p++;
-            tok = TOK_LE;
-        } else if (c == '<') {
-            PEEKC(c, p);
-            if (c == '=') {
-                p++;
-                tok = TOK_A_SHL;
-            } else {
-                tok = TOK_SHL;
-            }
-        } else {
-            tok = TOK_LT;
-        }
-        break;
-    case '>':
-        PEEKC(c, p);
-        if (c == '=') {
-            p++;
-            tok = TOK_GE;
-        } else if (c == '>') {
-            PEEKC(c, p);
-            if (c == '=') {
-                p++;
-                tok = TOK_A_SAR;
-            } else {
-                tok = TOK_SAR;
-            }
-        } else {
-            tok = TOK_GT;
-        }
-        break;
-        
-    case '&':
-        PEEKC(c, p);
-        if (c == '&') {
-            p++;
-            tok = TOK_LAND;
-        } else if (c == '=') {
-            p++;
-            tok = TOK_A_AND;
-        } else {
-            tok = '&';
-        }
-        break;
-        
-    case '|':
-        PEEKC(c, p);
-        if (c == '|') {
-            p++;
-            tok = TOK_LOR;
-        } else if (c == '=') {
-            p++;
-            tok = TOK_A_OR;
-        } else {
-            tok = '|';
-        }
-        break;
-
-    case '+':
-        PEEKC(c, p);
-        if (c == '+') {
-            p++;
-            tok = TOK_INC;
-        } else if (c == '=') {
-            p++;
-            tok = TOK_A_ADD;
-        } else {
-            tok = '+';
-        }
-        break;
-        
-    case '-':
-        PEEKC(c, p);
-        if (c == '-') {
-            p++;
-            tok = TOK_DEC;
-        } else if (c == '=') {
-            p++;
-            tok = TOK_A_SUB;
-        } else if (c == '>') {
-            p++;
-            tok = TOK_ARROW;
-        } else {
-            tok = '-';
-        }
-        break;
-
-    PARSE2('!', '!', '=', TOK_NE)
-    PARSE2('=', '=', '=', TOK_EQ)
-    PARSE2('*', '*', '=', TOK_A_MUL)
-    PARSE2('%', '%', '=', TOK_A_MOD)
-    PARSE2('^', '^', '=', TOK_A_XOR)
-        
-        /* comments or operator */
-    case '/':
-        PEEKC(c, p);
-        if (c == '*') {
-            p = parse_comment(p);
-            /* comments replaced by a blank */
-            tok = ' ';
-            goto maybe_space;
-        } else if (c == '/') {
-            p = parse_line_comment(p);
-            tok = ' ';
-            goto maybe_space;
-        } else if (c == '=') {
-            p++;
-            tok = TOK_A_DIV;
-        } else {
-            tok = '/';
-        }
-        break;
-        
-    case '(':
-    case ')':
-    case '[':
-    case ']':
-    case '{':
-    case '}':
-    case ',':
-    case ';':
-    case ':':
-    case '?':
-    case '~':
-    parse_simple:
-        tok = c;
-        p++;
-        break;
-    case 0xEF: /* UTF8 BOM ? */
-        if (p[1] == 0xBB && p[2] == 0xBF && p == file->buffer) {
-            p += 3;
-            goto redo_no_start;
-        }
-    default:
-        if (c >= 0x80 && c <= 0xFF) /* utf8 identifiers */
-	    goto parse_ident_fast;
-        if (parse_flags & PARSE_FLAG_ASM_FILE)
-            goto parse_simple;
-        clex_error("unrecognized character '%c'", c);
-        break;
-    }
-    tok_flags = 0;
-keep_tok_flags:
-    file->buf_ptr = p;
-#if defined(PARSE_DEBUG)
-    printf("token = %d %s\n", tok, get_tok_str(tok, &tokc));
-#endif
-}
-
-/* token string handling */
-void tok_str_new(TokenString *s)
-{
-    s->str = NULL;
-    s->len = s->need_spc = 0;
-    s->allocated_len = 0;
-    s->last_line_num = -1;
-}
-
-ST_FUNC void tok_str_free_str(int *str)
-{
-    tal_free(tokstr_alloc, str);
-}
-
-ST_FUNC TokenString *tok_str_alloc(void)
-{
-    TokenString *str = tal_realloc(tokstr_alloc, 0, sizeof *str);
-    tok_str_new(str);
-    return str;
-}
-
-ST_FUNC int *tok_str_realloc(TokenString *s, int new_size)
-{
-    int *str, size;
-
-    size = s->allocated_len;
-    if (size < 16)
-        size = 16;
-    while (size < new_size)
-        size = size * 2;
-    if (size > s->allocated_len) {
-        str = tal_realloc(tokstr_alloc, s->str, size * sizeof(int));
-        s->allocated_len = size;
-        s->str = str;
-    }
-    return s->str;
-}
-
-ST_FUNC void tok_str_add(TokenString *s, int t)
-{
-    int len, *str;
-
-    len = s->len;
-    str = s->str;
-    if (len >= s->allocated_len)
-        str = tok_str_realloc(s, len + 1);
-    str[len++] = t;
-    s->len = len;
+    clex_error("%s expected", msg);
 }
 
 PUB_FUNC int clex_init(const char *filename)
 {
     int i, c;
     const char *p, *r;
-    //const char *p, *r;
 
     if (clex_open(filename) < 0)
         return -1;
@@ -1791,10 +1737,8 @@ PUB_FUNC int clex_init(const char *filename)
 
 PUB_FUNC void clex_deinit(void)
 {
-    clex_close();
     int i, n;
 
-    /* free tokens */
     n = tok_ident - TOK_IDENT;
     for(i = 0; i < n; i++)
         tal_free(toksym_alloc, table_ident[i]);
@@ -1813,6 +1757,8 @@ PUB_FUNC void clex_deinit(void)
     toksym_alloc = NULL;
     tal_delete(tokstr_alloc);
     tokstr_alloc = NULL;
+
+    clex_close();
 }
 
 #endif //CLEX_IMPLEMENTATION
