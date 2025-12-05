@@ -233,7 +233,6 @@ enum clex_token {
      DEF(TOK_TYPEOF2, "__typeof")
      DEF(TOK_TYPEOF3, "__typeof__")
      DEF(TOK_LABEL, "__label__")
-
 #undef DEF
 };
 
@@ -331,8 +330,6 @@ ST_DATA const char clex_keywords[] =
      DEF(TOK_CONST1, "const")
      DEF(TOK_CONST2, "__const") /* gcc keyword */
      DEF(TOK_CONST3, "__const__") /* gcc keyword */
-     DEF(TOK_PURE1, "pure")
-     DEF(TOK_PURE2, "__pure__")
      DEF(TOK_VOLATILE1, "volatile")
      DEF(TOK_VOLATILE2, "__volatile") /* gcc keyword */
      DEF(TOK_VOLATILE3, "__volatile__") /* gcc keyword */
@@ -1722,7 +1719,7 @@ PUB_FUNC NORETURN void clex_error(const char *fmt, ...)
     exit(EXIT_FAILURE);
 }
 
-PUB_FUNC void expect(const char *msg)
+PUB_FUNC void clex_expect(const char *msg)
 {
     clex_error("%s expected", msg);
 }
