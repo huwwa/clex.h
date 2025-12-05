@@ -417,8 +417,6 @@ ST_DATA CString tokcstr;
 ST_DATA TokenSym *hash_ident[TOK_HASH_SIZE];
 ST_DATA char token_buf[STRING_MAX_SIZE + 1];
 ST_DATA CString cstr_buf;
-ST_DATA TokenString tokstr_buf;
-ST_DATA TokenString unget_buf;
 ST_DATA unsigned char isidnum_table[256 - CH_EOF];
 ST_DATA struct TinyAlloc *toksym_alloc;
 ST_DATA struct TinyAlloc *tokstr_alloc;
@@ -426,7 +424,6 @@ ST_DATA struct TinyAlloc *tokstr_alloc;
 /* display benchmark infos */
 ST_DATA int tok_ident;
 ST_DATA TokenSym **table_ident;
-ST_DATA int pp_expr;
 
 /* function definitions */
 ST_FUNC void clex_free(void *ptr);
@@ -1243,37 +1240,6 @@ static uint8_t *parse_pp_string(uint8_t *p, int sep, CString *str)
     return p;
 }
 
-/* token string handling */
-ST_INLN void tok_str_new(TokenString *s)
-{
-    s->str = NULL;
-    s->len = s->need_spc = 0;
-    s->allocated_len = 0;
-    s->last_line_num = -1;
-}
-
-ST_FUNC void tok_str_free_str(int *str)
-{
-    tal_free(tokstr_alloc, str);
-}
-
-ST_FUNC int *tok_str_realloc(TokenString *s, int new_size)
-{
-    int *str, size;
-
-    size = s->allocated_len;
-    if (size < 16)
-        size = 16;
-    while (size < new_size)
-        size = size * 2;
-    if (size > s->allocated_len) {
-        str = tal_realloc(tokstr_alloc, s->str, size * sizeof(int));
-        s->allocated_len = size;
-        s->str = str;
-    }
-    return s->str;
-}
-
 /* ------------------------------------------------------------------------- */
 /* public functions */
 
@@ -1790,9 +1756,6 @@ PUB_FUNC int clex_init(const char *filename)
     cstr_new(&tokcstr);
     cstr_new(&cstr_buf);
     cstr_realloc(&cstr_buf, STRING_MAX_SIZE);
-    tok_str_new(&tokstr_buf);
-    tok_str_realloc(&tokstr_buf, TOKSTR_MAX_SIZE);
-    tok_str_new(&unget_buf);
 
     tok_ident = TOK_IDENT;
     p = clex_keywords;
@@ -1822,8 +1785,6 @@ PUB_FUNC void clex_deinit(void)
     /* free static buffers */
     cstr_free(&tokcstr);
     cstr_free(&cstr_buf);
-    tok_str_free_str(tokstr_buf.str);
-    tok_str_free_str(unget_buf.str);
 
     /* free allocators */
     tal_alloc_free();
