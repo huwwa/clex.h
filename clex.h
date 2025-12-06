@@ -33,11 +33,11 @@
 #ifdef CLEX_IMPLEMENTATION
 
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
-#include <math.h>
 #include <fcntl.h>
 
 #ifndef _WIN32
@@ -51,9 +51,6 @@
 #include <io.h> /* open, close etc. */
 #include <direct.h> /* getcwd */
 #include <malloc.h> /* alloca */
-# ifndef _MSC_VER
-#  include <stdint.h>
-# endif
 #endif
 
 #define PUB_FUNC
