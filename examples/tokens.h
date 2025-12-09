@@ -1,7 +1,6 @@
 #ifndef _toks_h
 #define _toks_h
 
-/* keywords */
      DEF(TOK_IF, "if")
      DEF(TOK_ELSE, "else")
      DEF(TOK_WHILE, "while")
@@ -17,7 +16,6 @@
      DEF(TOK_ASM1, "asm")
      DEF(TOK_ASM2, "__asm")
      DEF(TOK_ASM3, "__asm__")
-
      DEF(TOK_EXTERN, "extern")
      DEF(TOK_STATIC, "static")
      DEF(TOK_UNSIGNED, "unsigned")
@@ -41,10 +39,8 @@
      DEF(TOK_RESTRICT3, "__restrict__")
      DEF(TOK_EXTENSION, "__extension__") /* gcc keyword */
      DEF(TOK_THREAD_LOCAL, "_Thread_local") /* C11 thread-local storage */
-
      DEF(TOK_GENERIC, "_Generic")
      DEF(TOK_STATIC_ASSERT, "_Static_assert")
-
      DEF(TOK_VOID, "void")
      DEF(TOK_CHAR, "char")
      DEF(TOK_INT, "int")
@@ -69,7 +65,6 @@
      DEF(TOK_TYPEOF2, "__typeof")
      DEF(TOK_TYPEOF3, "__typeof__")
      DEF(TOK_LABEL, "__label__")
-
      DEF(TOK_LE, "<=")
      DEF(TOK_GE,">=")
      DEF(TOK_NE, "!=")
@@ -89,4 +84,27 @@
      DEF(TOK_A_XOR, "^=")
      DEF(TOK_A_OR, "|=")
      DEF(TOK_ARROW, "->")
+     DEF(TOK_A_SHL, "<<=")
+     DEF(TOK_A_SAR, ">>=")
+
+     DEF(TOK_CINT,)
+     DEF(TOK_CUINT,)
+     DEF(TOK_CLONG,)
+     DEF(TOK_CULONG,)
+     DEF(TOK_CLLONG,)
+     DEF(TOK_CULLONG,)
+     DEF(TOK_LCHAR,)
+     DEF(TOK_CCHAR,)
+     DEF(TOK_PPNUM,)
+     DEF(TOK_PPSTR,)
+     DEF(TOK_LSTR,)
+     DEF(TOK_STR,)
+     DEF(TOK_CFLOAT,)
+     DEF(TOK_CDOUBLE,)
+     DEF(TOK_CLDOUBLE,)
+     DEF(TOK_LT,)
+     DEF(TOK_GT,)
+     DEF(TOK_DOTS,)
+     DEF(TOK_EOF,)
+
 #endif //_toks_h

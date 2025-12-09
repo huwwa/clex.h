@@ -30,6 +30,7 @@
 #ifndef CLEX_H
 #define CLEX_H
 
+//TODO: include declaration only ifndef
 #ifdef CLEX_IMPLEMENTATION
 
 #include <stdarg.h>
@@ -39,6 +40,7 @@
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -62,6 +64,14 @@
 #define ST_INLN static inline
 #define ST_DATA static
 #define ST_FUNC static
+
+#define PTR_SIZE 8
+
+#if PTR_SIZE == 8
+# define LONG_SIZE 8
+#else
+# define LONG_SIZE 4
+#endif
 
 #define ACCEPT_LF_IN_STRINGS 0
 
@@ -152,13 +162,13 @@
 #define TOK_CLDOUBLE 0xcc /* long double constant */
 #define TOK_PPNUM   0xcd /* preprocessor number */
 #define TOK_PPSTR   0xce /* preprocessor string */
-#define TOK_LINENUM 0xcf /* line number info */
 
 #define TOK_EOF       (-1)  /* end of file */
 #define TOK_LINEFEED  10    /* line feed */
 
 /* all identifiers and strings have token above that */
 #define TOK_IDENT 256
+
 enum clex_token {
     TOK_LAST = TOK_IDENT - 1
 #define DEF(id, str) ,id
@@ -231,6 +241,9 @@ enum clex_token {
      DEF(TOK_TYPEOF3, "__typeof__")
      DEF(TOK_LABEL, "__label__")
 #undef DEF
+/* keywords: tok >= TOK_IDENT && tok < TOK_UIDENT */
+     ,TOK_UIDENT
+/* other identifiers: tok > TOK_UIDENT */
 };
 
 typedef struct CString {
@@ -239,14 +252,15 @@ typedef struct CString {
     int size_allocated;
 } CString;
 
+/* constant value */
 typedef union CValue {
     long double ld;
     double d;
     float f;
     uint64_t i;
     struct {
+        char *data;
         int size;
-        const void *data;
     } str;
 } CValue;
 
@@ -413,30 +427,53 @@ ST_DATA char token_buf[STRING_MAX_SIZE + 1];
 ST_DATA CString cstr_buf;
 ST_DATA unsigned char isidnum_table[256 - CH_EOF];
 ST_DATA struct TinyAlloc *toksym_alloc;
-ST_DATA struct TinyAlloc *tokstr_alloc;
 
 /* display benchmark infos */
 ST_DATA int tok_ident;
 ST_DATA TokenSym **table_ident;
 
 /* function definitions */
-ST_FUNC void clex_free(void *ptr);
+ST_FUNC int set_idnum(int c, int val);
+ST_FUNC char *normalize_slashes(char *path);
 ST_FUNC void *clex_malloc(unsigned long size);
 ST_FUNC void *clex_mallocz(unsigned long size);
 ST_FUNC void *clex_realloc(void *ptr, unsigned long size);
+ST_FUNC void clex_free(void *ptr);
+ST_FUNC char *pstrcpy(char *dst, size_t size, const char *src);
 ST_FUNC void clex_open_bf(const char *filename, int initlen);
-ST_FUNC int clex_open(const char *filename);
-ST_FUNC void clex_close(void);
-ST_FUNC char *pstrcpy(char *buf, size_t size, const char *s);
-ST_FUNC int handle_eob(void);
-ST_FUNC NORETURN void clex_error(const char *fmt, ...);
+ST_FUNC void cstr_realloc(CString *cstr, int new_size);
 ST_FUNC void cstr_cat(CString *cstr, const char *str, int len);
+ST_FUNC void cstr_wccat(CString *cstr, int ch);
 ST_FUNC void cstr_new(CString *cstr);
 ST_FUNC void cstr_free(CString *cstr);
 ST_FUNC void cstr_reset(CString *cstr);
+ST_FUNC void add_char(CString *cstr, int c);
+ST_FUNC TokenSym *tok_alloc_new(TokenSym **pts, const char *str, int len);
+ST_FUNC TokenSym *tok_alloc(const char *str, int len);
+ST_FUNC int handle_eob(void);
+ST_FUNC int next_c(void);
+ST_FUNC int handle_stray_noerror(int err);
+ST_FUNC int handle_bs(uint8_t **p);
+ST_FUNC int handle_stray(uint8_t **p);
+ST_FUNC uint8_t *parse_line_comment(uint8_t *p);
 ST_FUNC uint8_t *parse_comment(uint8_t *p);
+ST_FUNC uint8_t *parse_pp_string(uint8_t *p, int sep, CString *str);
+ST_FUNC int bn_lshift(unsigned int *bn, int shift, int or_val);
+ST_FUNC void bn_zero(unsigned int *bn);
+ST_FUNC void parse_number(const char *p);
+ST_FUNC void parse_escape_string(CString *outstr, const uint8_t *buf, int is_long);
+ST_FUNC void parse_string(const char *s, int len);
 ST_FUNC const char *get_tok_str(int v, CValue *cv);
+
 PUB_FUNC void next(void);
+PUB_FUNC void skip(int c);
+PUB_FUNC NORETURN void clex_error(const char *fmt, ...);
+PUB_FUNC void clex_expect(const char *msg);
+PUB_FUNC void clex_open_bf_mem(const char *buf, int initlen);
+PUB_FUNC int clex_open(const char *filename);
+PUB_FUNC void clex_close(void);
+PUB_FUNC void clex_new(void);
+PUB_FUNC void clex_delete(void);
 
 /* space excluding newline */
 static inline int is_space(int ch) {
@@ -524,29 +561,6 @@ ST_FUNC char *pstrcpy(char *dst, size_t size, const char *src)
     return dst;
 }
 
-ST_FUNC int clex_open(const char *filename)
-{
-    int fd;
-    if (!strcmp(filename, "-"))
-        fd = 0, filename = "<stdin>";
-    else
-        fd = open(filename, O_RDONLY);
-    if (fd < 0)
-        return -1;
-    clex_open_bf(filename, 0);
-    file->fd = fd;
-    return fd;
-}
-
-ST_FUNC void clex_close(void)
-{
-    BufferedFile *bf = file;
-    if (bf->fd > 0)
-        close(bf->fd);
-    file = bf->prev;
-    clex_free(bf);
-}
-
 ST_FUNC void clex_open_bf(const char *filename, int initlen)
 {
     BufferedFile *bf;
@@ -582,7 +596,7 @@ typedef struct pp_alloc_t {
     struct pp_alloc_t *next, *prev;
 } pp_alloc_t;
 
-static pp_alloc_t pp_allocs;
+ST_DATA pp_alloc_t pp_allocs;
 
 #define USE_TAL
 
@@ -592,7 +606,16 @@ static pp_alloc_t pp_allocs;
 #define tal_new(a,b,c)
 #define tal_delete(a)
 
-static void clex_free_impl(void *p)
+ST_FUNC void clex_free_impl(void *p);
+ST_FUNC void *clex_realloc_impl(void *p, unsigned size);
+ST_FUNC TinyAlloc *tal_new(TinyAlloc **pal, unsigned limit, unsigned size);
+ST_FUNC void tal_delete(TinyAlloc *al);
+ST_FUNC void tal_free_impl(TinyAlloc *al, void *p TAL_DEBUG_PARAMS);
+ST_FUNC void *tal_realloc_impl(TinyAlloc **pal, void *p, unsigned size TAL_DEBUG_PARAMS);
+ST_FUNC void tal_alloc_init(void);
+ST_FUNC void tal_alloc_free(void);
+ST_FUNC void clex_free_impl(void *p)
+
 {
     if (p) {
         pp_alloc_t *alloc = ((pp_alloc_t *)p) - 1;
@@ -602,7 +625,7 @@ static void clex_free_impl(void *p)
     }
 }
 
-static void *clex_realloc_impl(void *p, unsigned size)
+ST_FUNC void *clex_realloc_impl(void *p, unsigned size)
 {
     pp_alloc_t *alloc = NULL;
 
@@ -664,7 +687,7 @@ typedef struct tal_header_t {
 
 /* ------------------------------------------------------------------------- */
 
-static TinyAlloc *tal_new(TinyAlloc **pal, unsigned limit, unsigned size)
+ST_FUNC TinyAlloc *tal_new(TinyAlloc **pal, unsigned limit, unsigned size)
 {
     TinyAlloc *al = clex_mallocz(sizeof(TinyAlloc));
     al->p = al->buffer = clex_malloc(size);
@@ -674,7 +697,7 @@ static TinyAlloc *tal_new(TinyAlloc **pal, unsigned limit, unsigned size)
     return al;
 }
 
-static void tal_delete(TinyAlloc *al)
+ST_FUNC void tal_delete(TinyAlloc *al)
 {
     TinyAlloc *next;
 
@@ -712,7 +735,7 @@ tail_call:
     goto tail_call;
 }
 
-static void tal_free_impl(TinyAlloc *al, void *p TAL_DEBUG_PARAMS)
+ST_FUNC void tal_free_impl(TinyAlloc *al, void *p TAL_DEBUG_PARAMS)
 {
     if (!p)
         return;
@@ -743,7 +766,7 @@ tail_call:
     }
 }
 
-static void *tal_realloc_impl(TinyAlloc **pal, void *p, unsigned size TAL_DEBUG_PARAMS)
+ST_FUNC void *tal_realloc_impl(TinyAlloc **pal, void *p, unsigned size TAL_DEBUG_PARAMS)
 {
     tal_header_t *header;
     void *ret;
@@ -842,12 +865,12 @@ tail_call:
 
 #endif /* USE_TAL */
 
-static void tal_alloc_init(void)
+ST_FUNC void tal_alloc_init(void)
 {
     pp_allocs.next = pp_allocs.prev = &pp_allocs;
 }
 
-static void tal_alloc_free(void)
+ST_FUNC void tal_alloc_free(void)
 {
     while (pp_allocs.next != &pp_allocs)
 	tal_free(toksym_alloc /* dummy */, pp_allocs.next + 1);
@@ -855,7 +878,7 @@ static void tal_alloc_free(void)
 
 /* ------------------------------------------------------------------------- */
 /* CString handling */
-static void cstr_realloc(CString *cstr, int new_size)
+ST_FUNC void cstr_realloc(CString *cstr, int new_size)
 {
     int size;
 
@@ -911,6 +934,17 @@ ST_FUNC void cstr_cat(CString *cstr, const char *str, int len)
     cstr->size = size;
 }
 
+/* add a wide char */
+ST_FUNC void cstr_wccat(CString *cstr, int ch)
+{
+    int size;
+    size = cstr->size + sizeof(nwchar_t);
+    if (size > cstr->size_allocated)
+        cstr_realloc(cstr, size);
+    *(nwchar_t *)(cstr->data + size - sizeof(nwchar_t)) = ch;
+    cstr->size = size;
+}
+
 ST_FUNC void cstr_new(CString *cstr)
 {
     memset(cstr, 0, sizeof(CString));
@@ -929,7 +963,7 @@ ST_FUNC void cstr_reset(CString *cstr)
 }
 
 /* XXX: unicode ? */
-static void add_char(CString *cstr, int c)
+ST_FUNC void add_char(CString *cstr, int c)
 {
     if (c == '\'' || c == '\"' || c == '\\') {
         /* XXX: could be more precise if char or string */
@@ -951,7 +985,7 @@ static void add_char(CString *cstr, int c)
 
 /* ------------------------------------------------------------------------- */
 /* allocate a new token */
-static TokenSym *tok_alloc_new(TokenSym **pts, const char *str, int len)
+ST_FUNC TokenSym *tok_alloc_new(TokenSym **pts, const char *str, int len)
 {
     TokenSym *ts, **ptable;
     int i;
@@ -1011,7 +1045,7 @@ ST_FUNC TokenSym *tok_alloc(const char *str, int len)
 
 /* return the current character, handling end of block if necessary
    (but not stray) */
-static int handle_eob(void)
+ST_FUNC int handle_eob(void)
 {
     BufferedFile *bf = file;
     int len;
@@ -1043,7 +1077,7 @@ static int handle_eob(void)
 }
 
 /* read next char from current input file and handle end of input buffer */
-static int next_c(void)
+ST_FUNC int next_c(void)
 {
     int ch = *++file->buf_ptr;
     /* end of buffer/file handling */
@@ -1053,7 +1087,7 @@ static int next_c(void)
 }
 
 /* input with '\[\r]\n' handling. */
-static int handle_stray_noerror(int err)
+ST_FUNC int handle_stray_noerror(int err)
 {
     int ch;
     while ((ch = next_c()) == '\\') {
@@ -1080,7 +1114,7 @@ static int handle_stray_noerror(int err)
 #define ninp() handle_stray_noerror(0)
 
 /* handle '\\' in strings, comments and skipped regions */
-static int handle_bs(uint8_t **p)
+ST_FUNC int handle_bs(uint8_t **p)
 {
     int c;
     file->buf_ptr = *p - 1;
@@ -1091,7 +1125,7 @@ static int handle_bs(uint8_t **p)
 
 /* skip the stray and handle the \\n case. Output an error if
    incorrect char after the stray */
-static int handle_stray(uint8_t **p)
+ST_FUNC int handle_stray(uint8_t **p)
 {
     int c;
     file->buf_ptr = *p - 1;
@@ -1109,7 +1143,7 @@ static int handle_stray(uint8_t **p)
 }
 
 /* single line C++ comments */
-static uint8_t *parse_line_comment(uint8_t *p)
+ST_FUNC uint8_t *parse_line_comment(uint8_t *p)
 {
     int c;
     for(;;) {
@@ -1134,7 +1168,7 @@ static uint8_t *parse_line_comment(uint8_t *p)
 }
 
 /* C comments */
-static uint8_t *parse_comment(uint8_t *p)
+ST_FUNC uint8_t *parse_comment(uint8_t *p)
 {
     int c;
     for(;;) {
@@ -1173,7 +1207,7 @@ static uint8_t *parse_comment(uint8_t *p)
 }
 
 /* parse a string without interpreting escapes */
-static uint8_t *parse_pp_string(uint8_t *p, int sep, CString *str)
+ST_FUNC uint8_t *parse_pp_string(uint8_t *p, int sep, CString *str)
 {
     int c;
     for(;;) {
@@ -1232,6 +1266,568 @@ static uint8_t *parse_pp_string(uint8_t *p, int sep, CString *str)
     }
     p++;
     return p;
+}
+
+#ifdef CLEX_USING_DOUBLE_FOR_LDOUBLE
+/* we use 64 bit (52 needed) numbers */
+#define BN_SIZE 2
+#else
+/* we use 128 bit (64/112 needed) numbers */
+#define BN_SIZE 4
+#endif
+
+/* bn = (bn << shift) | or_val */
+ST_FUNC int bn_lshift(unsigned int *bn, int shift, int or_val)
+{
+    int i;
+    unsigned int v;
+    if (bn[BN_SIZE - 1] >> (32 - shift))
+	return shift;
+    for(i=0;i<BN_SIZE;i++) {
+        v = bn[i];
+        bn[i] = (v << shift) | or_val;
+        or_val = v >> (32 - shift);
+    }
+    return 0;
+}
+
+ST_FUNC void bn_zero(unsigned int *bn)
+{
+    int i;
+    for(i=0;i<BN_SIZE;i++) {
+        bn[i] = 0;
+    }
+}
+/* parse number in null terminated string 'p' and return it in the
+   current token */
+ST_FUNC void parse_number(const char *p)
+{
+    int b, t, shift, frac_bits, s, exp_val, ch;
+    char *q;
+    unsigned int bn[BN_SIZE];
+#ifdef CLEX_USING_DOUBLE_FOR_LDOUBLE
+    double d;
+#else
+    long double d;
+#endif
+
+    /* number */
+    q = token_buf;
+    ch = *p++;
+    t = ch;
+    ch = *p++;
+    *q++ = t;
+    b = 10;
+    if (t == '.') {
+        goto float_frac_parse;
+    } else if (t == '0') {
+        if (ch == 'x' || ch == 'X') {
+            q--;
+            ch = *p++;
+            b = 16;
+        } else if (ch == 'b' || ch == 'B') {
+            q--;
+            ch = *p++;
+            b = 2;
+        }
+    }
+    /* parse all digits. cannot check octal numbers at this stage
+       because of floating point constants */
+    while (1) {
+        if (ch >= 'a' && ch <= 'f')
+            t = ch - 'a' + 10;
+        else if (ch >= 'A' && ch <= 'F')
+            t = ch - 'A' + 10;
+        else if (isnum(ch))
+            t = ch - '0';
+        else
+            break;
+        if (t >= b)
+            break;
+        if (q >= token_buf + STRING_MAX_SIZE) {
+        num_too_long:
+            clex_error("number too long");
+        }
+        *q++ = ch;
+        ch = *p++;
+    }
+    if (ch == '.' ||
+        ((ch == 'e' || ch == 'E') && b == 10) ||
+        ((ch == 'p' || ch == 'P') && (b == 16 || b == 2))) {
+        if (b != 10) {
+            /* NOTE: strtox should support that for hexa numbers, but
+               non ISOC99 libcs do not support it, so we prefer to do
+               it by hand */
+            /* hexadecimal or binary floats */
+            /* XXX: handle overflows */
+            frac_bits = 0;
+            *q = '\0';
+            if (b == 16)
+                shift = 4;
+            else
+                shift = 1;
+            bn_zero(bn);
+            q = token_buf;
+            while (1) {
+                t = *q++;
+                if (t == '\0') {
+                    break;
+                } else if (t >= 'a') {
+                    t = t - 'a' + 10;
+                } else if (t >= 'A') {
+                    t = t - 'A' + 10;
+                } else {
+                    t = t - '0';
+                }
+                frac_bits -= bn_lshift(bn, shift, t);
+            }
+            if (ch == '.') {
+                ch = *p++;
+                while (1) {
+                    t = ch;
+                    if (t >= 'a' && t <= 'f') {
+                        t = t - 'a' + 10;
+                    } else if (t >= 'A' && t <= 'F') {
+                        t = t - 'A' + 10;
+                    } else if (t >= '0' && t <= '9') {
+                        t = t - '0';
+                    } else {
+                        break;
+                    }
+                    if (t >= b)
+                        clex_error("invalid digit");
+                    frac_bits -= bn_lshift(bn, shift, t);
+                    frac_bits += shift;
+                    ch = *p++;
+                }
+            }
+            if (ch != 'p' && ch != 'P')
+                clex_expect("exponent");
+            ch = *p++;
+            s = 1;
+            exp_val = 0;
+            if (ch == '+') {
+                ch = *p++;
+            } else if (ch == '-') {
+                s = -1;
+                ch = *p++;
+            }
+            if (ch < '0' || ch > '9')
+                clex_expect("exponent digits");
+            while (ch >= '0' && ch <= '9') {
+		/* If exp_val is this large ldexp will return HUGE_VAL */
+		if (exp_val < 100000000)
+                    exp_val = exp_val * 10 + ch - '0';
+                ch = *p++;
+            }
+            exp_val = exp_val * s;
+
+            /* now we can generate the number */
+            /* XXX: should patch directly float number */
+#ifdef CLEX_USING_DOUBLE_FOR_LDOUBLE
+            d = (double)bn[1] * 4294967296.0 + (double)bn[0];
+            d = ldexp(d, exp_val - frac_bits);
+#else
+            d = (long double)bn[3] * 79228162514264337593543950336.0L +
+	        (long double)bn[2] * 18446744073709551616.0L +
+	        (long double)bn[1] * 4294967296.0L +
+	        (long double)bn[0];
+            d = ldexpl(d, exp_val - frac_bits);
+#endif
+            t = toup(ch);
+            if (t == 'F') {
+                ch = *p++;
+                tok = TOK_CFLOAT;
+                /* float : should handle overflow */
+                tokc.f = (float)d;
+            } else if (t == 'L') {
+                ch = *p++;
+                tok = TOK_CLDOUBLE;
+#ifdef CLEX_USING_DOUBLE_FOR_LDOUBLE
+                tokc.d = d;
+#else
+                tokc.ld = d;
+#endif
+            } else {
+                tok = TOK_CDOUBLE;
+                tokc.d = (double)d;
+            }
+        } else {
+            /* decimal floats */
+            if (ch == '.') {
+                if (q >= token_buf + STRING_MAX_SIZE)
+                    goto num_too_long;
+                *q++ = ch;
+                ch = *p++;
+            float_frac_parse:
+                while (ch >= '0' && ch <= '9') {
+                    if (q >= token_buf + STRING_MAX_SIZE)
+                        goto num_too_long;
+                    *q++ = ch;
+                    ch = *p++;
+                }
+            }
+            if (ch == 'e' || ch == 'E') {
+                if (q >= token_buf + STRING_MAX_SIZE)
+                    goto num_too_long;
+                *q++ = ch;
+                ch = *p++;
+                if (ch == '-' || ch == '+') {
+                    if (q >= token_buf + STRING_MAX_SIZE)
+                        goto num_too_long;
+                    *q++ = ch;
+                    ch = *p++;
+                }
+                if (ch < '0' || ch > '9')
+                    clex_expect("exponent digits");
+                while (ch >= '0' && ch <= '9') {
+                    if (q >= token_buf + STRING_MAX_SIZE)
+                        goto num_too_long;
+                    *q++ = ch;
+                    ch = *p++;
+                }
+            }
+            *q = '\0';
+            t = toup(ch);
+            errno = 0;
+            if (t == 'F') {
+                ch = *p++;
+                tok = TOK_CFLOAT;
+                tokc.f = strtof(token_buf, NULL);
+            } else if (t == 'L') {
+                ch = *p++;
+                tok = TOK_CLDOUBLE;
+#ifdef CLEX_USING_DOUBLE_FOR_LDOUBLE
+                tokc.d = strtod(token_buf, NULL);
+#else
+                tokc.ld = strtold(token_buf, NULL);
+#endif
+            } else {
+                tok = TOK_CDOUBLE;
+                tokc.d = strtod(token_buf, NULL);
+            }
+        }
+    } else {
+        unsigned long long n, n1;
+        int lcount, ucount, ov = 0;
+        const char *p1;
+
+        /* integer number */
+        *q = '\0';
+        q = token_buf;
+        if (b == 10 && *q == '0') {
+            b = 8;
+            q++;
+        }
+        n = 0;
+        while(1) {
+            t = *q++;
+            /* no need for checks except for base 10 / 8 errors */
+            if (t == '\0')
+                break;
+            else if (t >= 'a')
+                t = t - 'a' + 10;
+            else if (t >= 'A')
+                t = t - 'A' + 10;
+            else
+                t = t - '0';
+            if (t >= b)
+                clex_error("invalid digit");
+            n1 = n;
+            n = n * b + t;
+            /* detect overflow */
+            if (n1 >= 0x1000000000000000ULL && n / b != n1)
+                ov = 1;
+        }
+
+        /* Determine the characteristics (unsigned and/or 64bit) the type of
+           the constant must have according to the constant suffix(es) */
+        lcount = ucount = 0;
+        p1 = p;
+        for(;;) {
+            t = toup(ch);
+            if (t == 'L') {
+                if (lcount >= 2)
+                    clex_error("three 'l's in integer constant");
+                if (lcount && *(p - 1) != ch)
+                    clex_error("incorrect integer suffix: %s", p1);
+                lcount++;
+                ch = *p++;
+            } else if (t == 'U') {
+                if (ucount >= 1)
+                    clex_error("two 'u's in integer constant");
+                ucount++;
+                ch = *p++;
+            } else {
+                break;
+            }
+        }
+
+        /* Determine if it needs 64 bits and/or unsigned in order to fit */
+        if (ucount == 0 && b == 10) {
+            if (lcount <= (LONG_SIZE == 4)) {
+                if (n >= 0x80000000U)
+                    lcount = (LONG_SIZE == 4) + 1;
+            }
+            if (n >= 0x8000000000000000ULL)
+                ov = 1, ucount = 1;
+        } else {
+            if (lcount <= (LONG_SIZE == 4)) {
+                if (n >= 0x100000000ULL)
+                    lcount = (LONG_SIZE == 4) + 1;
+                else if (n >= 0x80000000U)
+                    ucount = 1;
+            }
+            if (n >= 0x8000000000000000ULL)
+                ucount = 1;
+        }
+
+        if (ov)
+            clex_error("integer constant overflow");
+
+        tok = TOK_CINT;
+	if (lcount) {
+            tok = TOK_CLONG;
+            if (lcount == 2)
+                tok = TOK_CLLONG;
+	}
+	if (ucount)
+	    ++tok; /* TOK_CU... */
+        tokc.i = n;
+    }
+    if (ch)
+        clex_error("invalid number");
+}
+
+/* evaluate escape codes in a string. */
+static void parse_escape_string(CString *outstr, const uint8_t *buf, int is_long)
+{
+    int c, n, i;
+    const uint8_t *p;
+
+    p = buf;
+    for(;;) {
+        c = *p;
+        if (c == '\0')
+            break;
+        if (c == '\\') {
+            p++;
+            /* escape */
+            c = *p;
+            switch(c) {
+            case '0': case '1': case '2': case '3':
+            case '4': case '5': case '6': case '7':
+                /* at most three octal digits */
+                n = c - '0';
+                p++;
+                c = *p;
+                if (isoct(c)) {
+                    n = n * 8 + c - '0';
+                    p++;
+                    c = *p;
+                    if (isoct(c)) {
+                        n = n * 8 + c - '0';
+                        p++;
+                    }
+                }
+                c = n;
+                goto add_char_nonext;
+            case 'x': i = 0; goto parse_hex_or_ucn;
+            case 'u': i = 4; goto parse_hex_or_ucn;
+            case 'U': i = 8; goto parse_hex_or_ucn;
+    parse_hex_or_ucn:
+                p++;
+                n = 0;
+                do {
+                    c = *p;
+                    if (c >= 'a' && c <= 'f')
+                        c = c - 'a' + 10;
+                    else if (c >= 'A' && c <= 'F')
+                        c = c - 'A' + 10;
+                    else if (isnum(c))
+                        c = c - '0';
+                    else if (i >= 0)
+                        clex_expect("more hex digits in universal-character-name");
+                    else
+                        goto add_hex_or_ucn;
+                    n = (unsigned) n * 16 + c;
+                    p++;
+                } while (--i);
+		if (is_long) {
+    add_hex_or_ucn:
+                    c = n;
+		    goto add_char_nonext;
+		}
+                cstr_u8cat(outstr, n);
+                continue;
+            case 'a':
+                c = '\a';
+                break;
+            case 'b':
+                c = '\b';
+                break;
+            case 'f':
+                c = '\f';
+                break;
+            case 'n':
+                c = '\n';
+                break;
+            case 'r':
+                c = '\r';
+                break;
+            case 't':
+                c = '\t';
+                break;
+            case 'v':
+                c = '\v';
+                break;
+            case 'e':
+                c = 27;
+                break;
+            case '\'':
+            case '\"':
+            case '\\':
+            case '?':
+                break;
+            default:
+            invalid_escape:
+                if (c >= '!' && c <= '~')
+                    clex_error("unknown escape sequence: \'\\%c\'", c);
+                else
+                    clex_error("unknown escape sequence: \'\\x%x\'", c);
+                break;
+            }
+        } else if (is_long && c >= 0x80) {
+            /* assume we are processing UTF-8 sequence */
+            /* reference: The Unicode Standard, Version 10.0, ch3.9 */
+
+            int cont; /* count of continuation bytes */
+            int skip; /* how many bytes should skip when error occurred */
+            int i;
+
+            /* decode leading byte */
+            if (c < 0xC2) {
+	            skip = 1; goto invalid_utf8_sequence;
+            } else if (c <= 0xDF) {
+	            cont = 1; n = c & 0x1f;
+            } else if (c <= 0xEF) {
+	            cont = 2; n = c & 0xf;
+            } else if (c <= 0xF4) {
+	            cont = 3; n = c & 0x7;
+            } else {
+	            skip = 1; goto invalid_utf8_sequence;
+            }
+
+            /* decode continuation bytes */
+            for (i = 1; i <= cont; i++) {
+                int l = 0x80, h = 0xBF;
+
+                /* adjust limit for second byte */
+                if (i == 1) {
+                    switch (c) {
+                    case 0xE0: l = 0xA0; break;
+                    case 0xED: h = 0x9F; break;
+                    case 0xF0: l = 0x90; break;
+                    case 0xF4: h = 0x8F; break;
+                    }
+                }
+
+                if (p[i] < l || p[i] > h) {
+                    skip = i; goto invalid_utf8_sequence;
+                }
+
+                n = (n << 6) | (p[i] & 0x3f);
+            }
+
+            /* advance pointer */
+            p += 1 + cont;
+            c = n;
+            goto add_char_nonext;
+
+            /* error handling */
+        invalid_utf8_sequence:
+            clex_error("ill-formed UTF-8 subsequence starting with: \'\\x%x\'", c);
+            c = 0xFFFD;
+            p += skip;
+            goto add_char_nonext;
+
+        }
+        p++;
+    add_char_nonext:
+        if (!is_long)
+            cstr_ccat(outstr, c);
+        else {
+#ifdef TCC_TARGET_PE
+            /* store as UTF-16 */
+            if (c < 0x10000) {
+                cstr_wccat(outstr, c);
+            } else {
+                c -= 0x10000;
+                cstr_wccat(outstr, (c >> 10) + 0xD800);
+                cstr_wccat(outstr, (c & 0x3FF) + 0xDC00);
+            }
+#else
+            cstr_wccat(outstr, c);
+#endif
+        }
+    }
+    /* add a trailing '\0' */
+    if (!is_long)
+        cstr_ccat(outstr, '\0');
+    else
+        cstr_wccat(outstr, '\0');
+}
+
+ST_FUNC void parse_string(const char *s, int len)
+{
+    uint8_t buf[1000], *p = buf;
+    int is_long, sep;
+
+    if ((is_long = *s == 'L'))
+        ++s, --len;
+    sep = *s++;
+    len -= 2;
+    if (len >= sizeof buf)
+        p = clex_malloc(len + 1);
+    memcpy(p, s, len);
+    p[len] = 0;
+
+    cstr_reset(&tokcstr);
+    parse_escape_string(&tokcstr, p, is_long);
+    if (p != buf)
+        clex_free(p);
+
+    if (sep == '\'') {
+        int char_size, i, n, c;
+        /* XXX:
+         * make
+         * it
+         * portable
+         * */
+        if (!is_long)
+            tok = TOK_CCHAR, char_size = 1;
+        else
+            tok = TOK_LCHAR, char_size = sizeof(nwchar_t);
+        n = tokcstr.size / char_size - 1;
+        if (n < 1)
+            clex_error("empty character constant");
+        if (n > 1)
+            clex_error("multi-character character constant");
+        for (c = i = 0; i < n; ++i) {
+            if (is_long)
+                c = ((nwchar_t *)tokcstr.data)[i];
+            else
+                c = (c << 8) | ((char *)tokcstr.data)[i];
+        }
+        tokc.i = c;
+    } else {
+        tokc.str.size = tokcstr.size;
+        tokc.str.data = tokcstr.data;
+        if (!is_long)
+            tok = TOK_STR;
+        else
+            tok = TOK_LSTR;
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1592,6 +2188,15 @@ keep_tok_flags:
 #if defined(PARSE_DEBUG)
     printf("token = %d %s\n", tok, get_tok_str(tok, &tokc));
 #endif
+convert:
+    /* convert preprocessor tokens into C tokens */
+    if (tok == TOK_PPNUM) {
+        if  (parse_flags & PARSE_FLAG_TOK_NUM)
+            parse_number(tokc.str.data);
+    } else if (tok == TOK_PPSTR) {
+        if (parse_flags & PARSE_FLAG_TOK_STR)
+            parse_string(tokc.str.data, tokc.str.size - 1);
+    }
 }
 
 ST_FUNC const char *get_tok_str(int v, CValue *cv)
@@ -1646,8 +2251,6 @@ ST_FUNC const char *get_tok_str(int v, CValue *cv)
         return strcpy(p, "<double>");
     case TOK_CLDOUBLE:
         return strcpy(p, "<long double>");
-    case TOK_LINENUM:
-        return strcpy(p, "<linenumber>");
 
     /* above tokens have value, the ones below don't */
     case TOK_LT:
@@ -1721,13 +2324,54 @@ PUB_FUNC void clex_expect(const char *msg)
     clex_error("%s expected", msg);
 }
 
-PUB_FUNC int clex_init(const char *filename)
+PUB_FUNC void clex_open_bf_mem(const char *buf, int initlen)
+{
+    BufferedFile *bf;
+    int buflen = (initlen > 0) ? initlen : strlen(buf);
+
+    bf = clex_mallocz(sizeof(BufferedFile) + buflen);
+    memcpy(bf->buffer, buf, buflen);
+    bf->buf_ptr = bf->buffer;
+    bf->buf_end = bf->buffer + buflen;
+    bf->buf_end[0] = CH_EOB; /* put eob symbol */
+    bf->line_num = 1;
+    bf->fd = -1;
+    bf->prev = file;
+    bf->prev_tok_flags = tok_flags;
+    file = bf;
+    tok_flags = TOK_FLAG_BOL | TOK_FLAG_BOF;
+}
+
+PUB_FUNC int clex_open(const char *filename)
+{
+    int fd;
+    if (!strcmp(filename, "-"))
+        fd = 0, filename = "<stdin>";
+    else
+        fd = open(filename, O_RDONLY);
+    if (fd < 0)
+        return -1;
+    clex_open_bf(filename, 0);
+    file->fd = fd;
+    return fd;
+}
+
+PUB_FUNC void clex_close(void)
+{
+    BufferedFile *bf = file;
+    if (!bf)
+        return;
+    if (bf->fd > 0)
+        close(bf->fd);
+    file = bf->prev;
+    clex_free(bf);
+}
+
+PUB_FUNC void clex_new(void)
 {
     int i, c;
     const char *p, *r;
 
-    if (clex_open(filename) < 0)
-        return -1;
     /* init isid table */
     for(i = CH_EOF; i<128; i++)
         set_idnum(i,
@@ -1742,7 +2386,6 @@ PUB_FUNC int clex_init(const char *filename)
     parse_flags = PARSE_FLAG_TOK_NUM | PARSE_FLAG_TOK_STR;
 
     tal_new(&toksym_alloc, TOKSYM_TAL_LIMIT, TOKSYM_TAL_SIZE);
-    tal_new(&tokstr_alloc, TOKSTR_TAL_LIMIT, TOKSTR_TAL_SIZE);
     tal_alloc_init();
 
     memset(hash_ident, 0, TOK_HASH_SIZE * sizeof(TokenSym *));
@@ -1763,10 +2406,9 @@ PUB_FUNC int clex_init(const char *filename)
         tok_alloc(p, r - p - 1);
         p = r;
     }
-    return 1;
 }
 
-PUB_FUNC void clex_deinit(void)
+PUB_FUNC void clex_delete(void)
 {
     int i, n;
 
@@ -1784,8 +2426,6 @@ PUB_FUNC void clex_deinit(void)
     tal_alloc_free();
     tal_delete(toksym_alloc);
     toksym_alloc = NULL;
-    tal_delete(tokstr_alloc);
-    tokstr_alloc = NULL;
 
     clex_close();
 }

@@ -1,2 +1,4 @@
 tags
-test
+lexer_repl
+ffi_repl
+.*_history
