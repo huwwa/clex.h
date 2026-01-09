@@ -86,25 +86,25 @@ redo:
         do {
             next();
             switch (tok) {
-#define CASE(id, ctype, ffi_type, value)\
+#define CASE(tok, ctype, ffi_type, value)\
 {\
-    case id:\
-            dynarray_add(&s1.types, &s1.nb_types, &ffi_type);\
-            ctype* x = malloc(sizeof *x);\
-            *x = value;\
-            dynarray_add(&s1.values, &s1.nb_values, x);\
-            break;\
+    case tok:\
+    dynarray_add(&s1.types, &s1.nb_types, &ffi_type);\
+    ctype* x = malloc(sizeof *x);\
+    *x = value;\
+    dynarray_add(&s1.values, &s1.nb_values, x);\
+    break;\
 }
                 CASE(TOK_CCHAR, char, ffi_type_schar, tokc.i);
                 CASE(TOK_CINT, int, ffi_type_sint32, tokc.i);
                 CASE(TOK_STR, char*, ffi_type_pointer, strdup(tokc.str.data));
                 CASE(TOK_CDOUBLE, double, ffi_type_double, tokc.d);
                 default:
-                    if (tok == TOK_EOF)
-                        break;
-                    printf("invalid argument '%s'\n"
-                            "expected syntax: func [arg...]\n" , get_tok_str(tok, &tokc));
-                    goto redo;
+                if (tok == TOK_EOF)
+                    break;
+                printf("invalid argument '%s'\n"
+                        "expected syntax: func [arg...]\n" , get_tok_str(tok, &tokc));
+                goto redo;
             }
         } while (tok != TOK_EOF);
 
@@ -115,12 +115,13 @@ redo:
         }
 
         ffi_call(&cif, FFI_FN(fn), NULL, s1.values);
+
+        free(s1.types);
+        dynarray_reset(&s1.values, &s1.nb_values);
     }
+
     clex_delete();
     write_history(".repl_history");
-
-    free(s1.types);
-    dynarray_reset(&s1.values, &s1.nb_values);
 }
 
 int main(int argc, char **argv)
