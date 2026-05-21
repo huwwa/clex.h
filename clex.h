@@ -30,9 +30,6 @@
 #ifndef CLEX_H
 #define CLEX_H
 
-//TODO: include declaration only ifndef
-#ifdef CLEX_IMPLEMENTATION
-
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -314,6 +311,68 @@ typedef struct TokenSym {
     char str[1];
 } TokenSym;
 
+PUB_FUNC void next(void);
+PUB_FUNC void skip(int c);
+PUB_FUNC NORETURN void clex_error(const char *fmt, ...);
+PUB_FUNC void clex_expect(const char *msg);
+PUB_FUNC void clex_open_bf_mem(const char *buf, int initlen);
+PUB_FUNC int clex_open(const char *filename);
+PUB_FUNC void clex_close(void);
+PUB_FUNC void clex_new(void);
+PUB_FUNC void clex_delete(void);
+PUB_FUNC const char *get_tok_str(int v, CValue *cv);
+/* ------------------------------------------------------------------------- */
+#ifdef CLEX_IMPLEMENTATION
+
+/* function definitions */
+ST_FUNC int set_idnum(int c, int val);
+ST_FUNC char *normalize_slashes(char *path);
+ST_FUNC void *clex_malloc(unsigned long size);
+ST_FUNC void *clex_mallocz(unsigned long size);
+ST_FUNC void *clex_realloc(void *ptr, unsigned long size);
+ST_FUNC void clex_free(void *ptr);
+ST_FUNC char *pstrcpy(char *dst, size_t size, const char *src);
+ST_FUNC void clex_open_bf(const char *filename, int initlen);
+ST_FUNC void cstr_realloc(CString *cstr, int new_size);
+ST_FUNC void cstr_cat(CString *cstr, const char *str, int len);
+ST_FUNC void cstr_wccat(CString *cstr, int ch);
+ST_FUNC void cstr_new(CString *cstr);
+ST_FUNC void cstr_free(CString *cstr);
+ST_FUNC void cstr_reset(CString *cstr);
+ST_FUNC void add_char(CString *cstr, int c);
+ST_FUNC TokenSym *tok_alloc_new(TokenSym **pts, const char *str, int len);
+ST_FUNC TokenSym *tok_alloc(const char *str, int len);
+ST_FUNC int handle_eob(void);
+ST_FUNC int next_c(void);
+ST_FUNC int handle_stray_noerror(int err);
+ST_FUNC int handle_bs(uint8_t **p);
+ST_FUNC int handle_stray(uint8_t **p);
+ST_FUNC uint8_t *parse_line_comment(uint8_t *p);
+ST_FUNC uint8_t *parse_comment(uint8_t *p);
+ST_FUNC uint8_t *parse_pp_string(uint8_t *p, int sep, CString *str);
+ST_FUNC int bn_lshift(unsigned int *bn, int shift, int or_val);
+ST_FUNC void bn_zero(unsigned int *bn);
+ST_FUNC void parse_number(const char *p);
+ST_FUNC void parse_escape_string(CString *outstr, const uint8_t *buf, int is_long);
+ST_FUNC void parse_string(const char *s, int len);
+
+/* space excluding newline */
+static inline int is_space(int ch) {
+    return ch == ' ' || ch == '\t' || ch == '\v' || ch == '\f' || ch == '\r';
+}
+static inline int isid(int c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+static inline int isnum(int c) {
+    return c >= '0' && c <= '9';
+}
+static inline int isoct(int c) {
+    return c >= '0' && c <= '7';
+}
+static inline int toup(int c) {
+    return (c >= 'a' && c <= 'z') ? c - 'a' + 'A' : c;
+}
+
 /* global variables */
 ST_DATA const char clex_keywords[] =
 #define DEF(id, str) str "\0"
@@ -431,67 +490,6 @@ ST_DATA struct TinyAlloc *toksym_alloc;
 /* display benchmark infos */
 ST_DATA int tok_ident;
 ST_DATA TokenSym **table_ident;
-
-/* function definitions */
-ST_FUNC int set_idnum(int c, int val);
-ST_FUNC char *normalize_slashes(char *path);
-ST_FUNC void *clex_malloc(unsigned long size);
-ST_FUNC void *clex_mallocz(unsigned long size);
-ST_FUNC void *clex_realloc(void *ptr, unsigned long size);
-ST_FUNC void clex_free(void *ptr);
-ST_FUNC char *pstrcpy(char *dst, size_t size, const char *src);
-ST_FUNC void clex_open_bf(const char *filename, int initlen);
-ST_FUNC void cstr_realloc(CString *cstr, int new_size);
-ST_FUNC void cstr_cat(CString *cstr, const char *str, int len);
-ST_FUNC void cstr_wccat(CString *cstr, int ch);
-ST_FUNC void cstr_new(CString *cstr);
-ST_FUNC void cstr_free(CString *cstr);
-ST_FUNC void cstr_reset(CString *cstr);
-ST_FUNC void add_char(CString *cstr, int c);
-ST_FUNC TokenSym *tok_alloc_new(TokenSym **pts, const char *str, int len);
-ST_FUNC TokenSym *tok_alloc(const char *str, int len);
-ST_FUNC int handle_eob(void);
-ST_FUNC int next_c(void);
-ST_FUNC int handle_stray_noerror(int err);
-ST_FUNC int handle_bs(uint8_t **p);
-ST_FUNC int handle_stray(uint8_t **p);
-ST_FUNC uint8_t *parse_line_comment(uint8_t *p);
-ST_FUNC uint8_t *parse_comment(uint8_t *p);
-ST_FUNC uint8_t *parse_pp_string(uint8_t *p, int sep, CString *str);
-ST_FUNC int bn_lshift(unsigned int *bn, int shift, int or_val);
-ST_FUNC void bn_zero(unsigned int *bn);
-ST_FUNC void parse_number(const char *p);
-ST_FUNC void parse_escape_string(CString *outstr, const uint8_t *buf, int is_long);
-ST_FUNC void parse_string(const char *s, int len);
-ST_FUNC const char *get_tok_str(int v, CValue *cv);
-
-PUB_FUNC void next(void);
-PUB_FUNC void skip(int c);
-PUB_FUNC NORETURN void clex_error(const char *fmt, ...);
-PUB_FUNC void clex_expect(const char *msg);
-PUB_FUNC void clex_open_bf_mem(const char *buf, int initlen);
-PUB_FUNC int clex_open(const char *filename);
-PUB_FUNC void clex_close(void);
-PUB_FUNC void clex_new(void);
-PUB_FUNC void clex_delete(void);
-
-/* space excluding newline */
-static inline int is_space(int ch) {
-    return ch == ' ' || ch == '\t' || ch == '\v' || ch == '\f' || ch == '\r';
-}
-static inline int isid(int c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
-}
-static inline int isnum(int c) {
-    return c >= '0' && c <= '9';
-}
-static inline int isoct(int c) {
-    return c >= '0' && c <= '7';
-}
-static inline int toup(int c) {
-    return (c >= 'a' && c <= 'z') ? c - 'a' + 'A' : c;
-}
-
 /* ------------------------------------------------------------------------- */
 ST_FUNC int set_idnum(int c, int val)
 {
@@ -2199,7 +2197,7 @@ convert:
     }
 }
 
-ST_FUNC const char *get_tok_str(int v, CValue *cv)
+PUB_FUNC const char *get_tok_str(int v, CValue *cv)
 {
     char *p;
     int i, len;
