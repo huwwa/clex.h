@@ -43,7 +43,7 @@ int main(void)
             next();
             printf("cond['%s'] -> (%s)\n", get_tok_str(tok, &tokc),
                    get_tok_name(tok, buf, sizeof(buf)));
-        } while (tok == TOK_EOF);
+        } while (tok != TOK_EOF);
         clex_close();
     }
 
